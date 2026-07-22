@@ -49,10 +49,12 @@ export interface ProgressEvent extends SSEEventBase {
 
 export interface HumanInputNeededEvent extends SSEEventBase {
   type: "human_input_needed";
-  phase: ResearchPhase;
+  phase?: ResearchPhase;
   prompt: string;
   input_id: string;
   options?: string[];
+  outline?: Array<{ section: string; key_points?: string[] }>;
+  editable_fields?: string[];
 }
 
 export interface ReportChunkEvent extends SSEEventBase {

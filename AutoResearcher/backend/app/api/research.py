@@ -1,30 +1,35 @@
-"""Research API routes — SSE streaming endpoint, reconnection, and human feedback."""
+"""Research API routes — SSE streaming with interrupt/resume, reconnection, and human feedback."""
 
 from __future__ import annotations
 
 import asyncio
 import time
 import uuid
-from typing import AsyncGenerator
+from typing import Any, AsyncGenerator
 
 from fastapi import APIRouter, Depends
 from fastapi.responses import StreamingResponse
+from langgraph.checkpoint.memory import InMemorySaver
+from langgraph.types import Command
 
 from app.agent.clients.protocols import LLMClient, SearchClient, VectorStoreClient
 from app.agent.graph import build_research_graph
 from app.agent.state import ResearchPhase, create_initial_state
+from app.core import transient_store
 from app.core.dependencies import (
     get_llm_client,
     get_search_client,
     get_semaphore,
     get_vectorstore_client,
 )
-from app.core import session_registry
 from app.models.events import (
+    CompletedStep,
     DonePayload,
     ErrorPayload,
     EventIDGenerator,
+    PendingSubTask,
     ResearchStartPayload,
+    ResumeStatePayload,
     SSEEvent,
     SSEEventType,
 )
@@ -32,7 +37,61 @@ from app.models.schemas import HumanFeedbackRequest, ResearchRequest
 
 router = APIRouter(prefix="/api/research", tags=["research"])
 
+_checkpointer = InMemorySaver()
+
+_compiled_graphs: dict[str, Any] = {}
+_feedback_futures: dict[str, asyncio.Future] = {}
 _active_research: dict[str, dict] = {}
+
+
+def _get_or_build_graph(
+    research_id: str,
+    llm: LLMClient,
+    search: SearchClient,
+    vectorstore: VectorStoreClient,
+):
+    if research_id not in _compiled_graphs:
+        _compiled_graphs[research_id] = build_research_graph(
+            llm=llm,
+            search=search,
+            vectorstore=vectorstore,
+            checkpointer=_checkpointer,
+        )
+    return _compiled_graphs[research_id]
+
+
+async def _stream_graph_events(
+    graph,
+    input_or_command,
+    config: dict,
+    event_queue: asyncio.Queue,
+) -> list:
+    """Run graph.astream and drain SSE events into the queue.
+
+    Returns the final sources list. On interrupt, astream ends naturally.
+    """
+    final_sources: list = []
+    try:
+        async for event in graph.astream(input_or_command, config=config):
+            if "__interrupt__" in event:
+                continue
+            for node_name, node_output in event.items():
+                for sse in node_output.get("_sse_events", []):
+                    await event_queue.put(sse)
+                if "sources" in node_output:
+                    final_sources = node_output["sources"]
+    finally:
+        await event_queue.put(None)
+    return final_sources
+
+
+async def _drain_queue(event_queue: asyncio.Queue) -> AsyncGenerator[str, None]:
+    """Yield SSE strings from queue until sentinel None."""
+    while True:
+        sse = await event_queue.get()
+        if sse is None:
+            break
+        yield sse.to_sse()
 
 
 async def _run_research_stream(
@@ -46,15 +105,99 @@ async def _run_research_stream(
 ) -> AsyncGenerator[str, None]:
     """Execute the research graph and yield SSE events.
 
-    Uses an asyncio.Queue so WriterNode can push report_chunk events in real-time
-    while the graph is still executing (streaming LLM output).
+    Handles interrupt/resume loop: when HumanFeedbackNode calls interrupt(),
+    astream terminates. We then wait for feedback via asyncio.Future, resume
+    the graph with Command(resume=data), and continue streaming.
     """
     start_time = time.time()
+    config = {"configurable": {"thread_id": research_id}}
+
+    graph = _get_or_build_graph(research_id, llm, search, vectorstore)
+
+    # --- Handle reconnection ---
+    if resume_from_event_id is not None:
+        try:
+            snapshot = await graph.aget_state(config)
+            if snapshot and snapshot.values:
+                state_vals = snapshot.values
+                completed_steps = []
+                for msg in state_vals.get("messages", []):
+                    completed_steps.append(
+                        CompletedStep(
+                            step_id=f"resumed_{len(completed_steps)}",
+                            action="completed",
+                            detail=msg.get("content", "")[:100],
+                        )
+                    )
+                pending_sub_tasks = [
+                    PendingSubTask(id=t["id"], query=t["query"], status=t["status"])
+                    for t in state_vals.get("sub_tasks", [])
+                    if t.get("status") == "pending"
+                ]
+
+                id_gen = EventIDGenerator(start=state_vals.get("_last_event_id", 0))
+                yield SSEEvent.create(
+                    SSEEventType.RESUME_STATE,
+                    ResumeStatePayload(
+                        research_id=research_id,
+                        resumed=True,
+                        phase=state_vals.get("phase", "unknown"),
+                        retry_count=state_vals.get("retry_count", 0),
+                        max_retries=state_vals.get("max_retries", 3),
+                        completed_steps=completed_steps,
+                        pending_sub_tasks=pending_sub_tasks,
+                        report_so_far=state_vals.get("report", ""),
+                    ),
+                    id_gen,
+                ).to_sse()
+
+                if snapshot.next and state_vals.get("phase") == ResearchPhase.AWAITING_HUMAN_INPUT.value:
+                    event_queue: asyncio.Queue[SSEEvent | None] = asyncio.Queue()
+                    transient_store.register(research_id, id_gen, event_queue)
+
+                    feedback_future: asyncio.Future = asyncio.get_event_loop().create_future()
+                    _feedback_futures[research_id] = feedback_future
+                    feedback_data = await feedback_future
+                    _feedback_futures.pop(research_id, None)
+
+                    resume_cmd = Command(resume=feedback_data)
+
+                    async with semaphore:
+                        task = asyncio.create_task(
+                            _stream_graph_events(graph, resume_cmd, config, event_queue)
+                        )
+                        async for sse_str in _drain_queue(event_queue):
+                            yield sse_str
+                        final_sources = await task
+
+                    duration = time.time() - start_time
+                    yield SSEEvent.create(
+                        SSEEventType.DONE,
+                        DonePayload(
+                            research_id=research_id,
+                            total_sources=len(final_sources),
+                            total_duration_seconds=round(duration, 2),
+                        ),
+                        id_gen,
+                    ).to_sse()
+                    return
+                return
+        except Exception as e:
+            err_gen = EventIDGenerator()
+            yield SSEEvent.create(
+                SSEEventType.ERROR,
+                ErrorPayload(
+                    error_code="CHECKPOINT_CORRUPTED",
+                    message=f"Failed to restore checkpoint: {e}",
+                    recoverable=False,
+                ),
+                err_gen,
+            ).to_sse()
+            return
+
+    # --- Normal (non-reconnection) flow ---
     id_gen = EventIDGenerator()
     event_queue: asyncio.Queue[SSEEvent | None] = asyncio.Queue()
-
-    # Initialize session in shared registry
-    session_registry.get_session(research_id)
 
     yield SSEEvent.create(
         SSEEventType.RESEARCH_START,
@@ -65,33 +208,40 @@ async def _run_research_stream(
     try:
         async with semaphore:
             state = create_initial_state(research_id, query)
-            state["_id_gen"] = id_gen
-            state["_event_queue"] = event_queue
-            graph = build_research_graph(llm=llm, search=search, vectorstore=vectorstore)
+            transient_store.register(research_id, id_gen, event_queue)
 
-            final_sources: list = []
+            # Phase 1: run graph until interrupt or completion
+            task = asyncio.create_task(
+                _stream_graph_events(graph, state, config, event_queue)
+            )
+            async for sse_str in _drain_queue(event_queue):
+                yield sse_str
+            final_sources = await task
 
-            async def _run_graph() -> None:
-                nonlocal final_sources
-                try:
-                    async for event in graph.astream(state):
-                        for node_name, node_output in event.items():
-                            for sse in node_output.get("_sse_events", []):
-                                await event_queue.put(sse)
-                            if "sources" in node_output:
-                                final_sources = node_output["sources"]
-                finally:
-                    await event_queue.put(None)
+            # Check if graph was interrupted (human feedback needed)
+            snapshot = await graph.aget_state(config)
+            if snapshot.next:
+                # Graph interrupted — wait for feedback via Future
+                feedback_future = asyncio.get_event_loop().create_future()
+                _feedback_futures[research_id] = feedback_future
 
-            graph_task = asyncio.create_task(_run_graph())
+                feedback_data = await feedback_future
+                _feedback_futures.pop(research_id, None)
 
-            while True:
-                sse = await event_queue.get()
-                if sse is None:
-                    break
-                yield sse.to_sse()
+                # Restore id_gen from checkpoint
+                last_eid = snapshot.values.get("_last_event_id", id_gen.current)
+                id_gen = EventIDGenerator(start=last_eid)
+                event_queue = asyncio.Queue()
+                transient_store.register(research_id, id_gen, event_queue)
 
-            await graph_task
+                resume_cmd = Command(resume=feedback_data)
+
+                task = asyncio.create_task(
+                    _stream_graph_events(graph, resume_cmd, config, event_queue)
+                )
+                async for sse_str in _drain_queue(event_queue):
+                    yield sse_str
+                final_sources = await task
 
             duration = time.time() - start_time
             yield SSEEvent.create(
@@ -116,7 +266,8 @@ async def _run_research_stream(
         ).to_sse()
     finally:
         _active_research.pop(research_id, None)
-        session_registry.remove_session(research_id)
+        _compiled_graphs.pop(research_id, None)
+        transient_store.unregister(research_id)
 
 
 @router.post("/start")
@@ -128,7 +279,7 @@ async def start_research(
     semaphore: asyncio.Semaphore = Depends(get_semaphore),
 ) -> StreamingResponse:
     """Start a research task and stream SSE events."""
-    research_id = str(uuid.uuid4())
+    research_id = request.research_id or str(uuid.uuid4())
     _active_research[research_id] = {"query": request.query, "phase": "planning"}
 
     return StreamingResponse(
@@ -152,15 +303,21 @@ async def start_research(
 
 @router.post("/feedback")
 async def submit_feedback(request: HumanFeedbackRequest) -> dict:
-    """Submit human feedback for a paused research task."""
-    session = session_registry.get_session(request.research_id)
-    if not session:
-        return {"status": "error", "message": "Research task not found or already completed"}
-    session["human_feedback"] = request.feedback
-    session["modified_outline"] = request.modified_outline
-    feedback_event: asyncio.Event | None = session.get("_feedback_event")
-    if feedback_event:
-        feedback_event.set()
+    """Submit human feedback for a paused research task.
+
+    Resolves the asyncio.Future that the SSE stream is awaiting,
+    which triggers graph resume via Command(resume=data).
+    """
+    future = _feedback_futures.get(request.research_id)
+    if not future:
+        return {"status": "error", "message": "Research task not found or not awaiting feedback"}
+
+    feedback_data = {
+        "feedback": request.feedback,
+        "modified_outline": request.modified_outline,
+    }
+    future.set_result(feedback_data)
+
     return {"status": "ok", "research_id": request.research_id}
 
 

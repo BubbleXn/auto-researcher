@@ -1,6 +1,6 @@
 """
 LangGraph research workflow — builds the StateGraph that orchestrates
-Planner → Searcher → Critic → Writer with conditional retry loops.
+Planner → Searcher → Critic → HumanFeedback → Writer with conditional retry loops.
 """
 
 from __future__ import annotations
@@ -19,11 +19,7 @@ from app.agent.state import ResearchState
 
 
 def _route_after_critic(state: dict[str, Any]) -> str:
-    """Route after the Critic node: retry search, proceed to writing, or end.
-
-    Uses the phase already determined by CriticNode, which accounts for
-    recommendation, retry_count, and max_retries internally.
-    """
+    """Route after the Critic node: retry search, proceed to writing, or end."""
     recommendation = state.get("critique", {}).get("recommendation")
     phase = state.get("phase", "")
 
@@ -40,11 +36,13 @@ def build_research_graph(
     llm: LLMClient,
     search: SearchClient,
     vectorstore: VectorStoreClient,
-) -> StateGraph:
+    checkpointer=None,
+):
     """
-    Build the research agent graph.
+    Build and compile the research agent graph.
 
-    Planner → Searcher → Critic → (conditional) → Writer or retry Searcher
+    When checkpointer is provided, interrupt() in HumanFeedbackNode will
+    persist state and allow resume via Command(resume=...).
     """
     planner = PlannerNode(llm=llm)
     searcher = SearcherNode(search=search, vectorstore=vectorstore)
@@ -67,4 +65,4 @@ def build_research_graph(
     graph.add_edge("human_feedback", "writer")
     graph.add_edge("writer", END)
 
-    return graph.compile()
+    return graph.compile(checkpointer=checkpointer)

@@ -135,6 +135,7 @@ function handleSSEEvent(
           inputId: event.input_id,
           prompt: event.prompt,
           options: event.options,
+          outline: event.outline,
         },
       };
 

@@ -10,6 +10,7 @@ import pytest
 
 from app.agent.nodes.writer import WriterNode
 from app.agent.state import ResearchPhase
+from app.core import transient_store
 from app.models.events import EventIDGenerator
 
 
@@ -53,6 +54,7 @@ class MockVectorStoreClient:
 
 
 def _make_writer_state() -> dict[str, Any]:
+    transient_store.register("test-id", EventIDGenerator(), asyncio.Queue())
     return {
         "research_id": "test-id",
         "query": "test research question",
@@ -62,9 +64,13 @@ def _make_writer_state() -> dict[str, Any]:
             {"title": "Source 1", "url": "https://example.com/1", "content": "Content about topic 1", "score": 0.9, "sub_task_id": "task_1"},
             {"title": "Source 2", "url": "https://example.com/2", "content": "Content about topic 2", "score": 0.8, "sub_task_id": "task_2"},
         ],
-        "_id_gen": EventIDGenerator(),
-        "_event_queue": asyncio.Queue(),
     }
+
+
+@pytest.fixture(autouse=True)
+def cleanup():
+    yield
+    transient_store.unregister("test-id")
 
 
 @pytest.mark.asyncio
@@ -135,7 +141,7 @@ async def test_writer_pushes_chunks_to_queue() -> None:
     llm = MockStreamLLMClient(long_text)
     writer = WriterNode(llm=llm)
     state = _make_writer_state()
-    event_queue = state["_event_queue"]
+    event_queue = transient_store.get_event_queue("test-id")
 
     result = await writer(state)
 

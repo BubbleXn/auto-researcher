@@ -47,6 +47,7 @@ export interface ResearchSession {
     inputId: string;
     prompt: string;
     options?: string[];
+    outline?: Array<{ section: string; key_points?: string[] }>;
   } | null;
 }
 

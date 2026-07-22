@@ -21,6 +21,7 @@ class Settings(BaseSettings):
     cors_origins: list[str] = ["http://localhost:3000"]
 
     max_concurrent_research: int = 3
+    use_mock: bool = False
 
     checkpoint_db_path: str = "./data/checkpoints.db"
 

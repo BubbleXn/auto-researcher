@@ -31,8 +31,8 @@ class SSEEventType(str, Enum):
 class EventIDGenerator:
     """Thread-safe monotonic event_id counter, one per research session."""
 
-    def __init__(self) -> None:
-        self._counter = 0
+    def __init__(self, start: int = 0) -> None:
+        self._counter = start
 
     def next(self) -> int:
         self._counter += 1

@@ -8,9 +8,9 @@ from typing import Any
 
 from app.agent.clients.protocols import SearchClient, VectorStoreClient
 from app.agent.state import ResearchPhase, SearchResult, SubTask
+from app.core import transient_store
 from app.models.events import (
     AgentStepPayload,
-    EventIDGenerator,
     PhaseChangePayload,
     ProgressPayload,
     SSEEvent,
@@ -25,11 +25,10 @@ class SearcherNode:
         self._vectorstore = vectorstore
 
     async def __call__(self, state: dict[str, Any]) -> dict[str, Any]:
-        id_gen: EventIDGenerator = state.get("_id_gen", EventIDGenerator())
+        id_gen = transient_store.get_id_gen(state["research_id"])
         sse_events: list[SSEEvent] = []
         sub_tasks = state.get("sub_tasks", [])
         all_results: list[SearchResult] = list(state.get("search_results", []))
-        prev_phase = state.get("phase")
 
         pending = [t for t in sub_tasks if t["status"] == "pending"]
 
@@ -40,13 +39,11 @@ class SearcherNode:
             else ResearchPhase.PLANNING.value
         )
 
-        # Add missing aspects from critique as new sub_tasks on retry
         critique = state.get("critique")
         if critique and retry_count > 0:
             missing_aspects = critique.get("missing_aspects", [])
             for i, aspect in enumerate(missing_aspects):
                 new_task_id = f"retry_{retry_count}_task_{i}"
-                # Only add if not already present
                 if not any(t["id"] == new_task_id for t in sub_tasks):
                     new_task = SubTask(
                         id=new_task_id,
@@ -126,12 +123,12 @@ class SearcherNode:
                         ids=[f"search_{state.get('research_id', 'unknown')}_{r['url']}" for r in new_results],
                     )
                 except Exception:
-                    pass  # vectorstore storage is best-effort
+                    pass
 
         return {
             "phase": ResearchPhase.CRITIQUING.value,
             "sub_tasks": sub_tasks,
             "search_results": all_results,
             "_sse_events": sse_events,
-            "_id_gen": id_gen,
+            "_last_event_id": id_gen.current,
         }

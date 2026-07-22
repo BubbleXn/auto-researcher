@@ -3,8 +3,8 @@ import type { ResearchPhase } from "@/types/sse-events";
 export const API_BASE_URL =
   process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
 
-export const SSE_ENDPOINT = "/api/research/start";
-export const HUMAN_INPUT_ENDPOINT = "/api/research/feedback";
+export const SSE_ENDPOINT = `${API_BASE_URL}/api/research/start`;
+export const HUMAN_INPUT_ENDPOINT = `${API_BASE_URL}/api/research/feedback`;
 
 export const PHASE_LABELS: Record<ResearchPhase, string> = {
   planning: "规划研究方案",

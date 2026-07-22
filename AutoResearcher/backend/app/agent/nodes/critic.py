@@ -9,10 +9,10 @@ from typing import Any
 
 from app.agent.clients.protocols import LLMClient
 from app.agent.state import CritiqueResult, ResearchPhase, SubTask
+from app.core import transient_store
 from app.models.events import (
     AgentStepPayload,
     ErrorPayload,
-    EventIDGenerator,
     PhaseChangePayload,
     SSEEvent,
     SSEEventType,
@@ -49,10 +49,9 @@ class CriticNode:
         self._llm = llm
 
     async def __call__(self, state: dict[str, Any]) -> dict[str, Any]:
-        id_gen: EventIDGenerator = state.get("_id_gen", EventIDGenerator())
+        id_gen = transient_store.get_id_gen(state["research_id"])
         sse_events: list[SSEEvent] = []
 
-        # --- Phase change event ---
         sse_events.append(
             SSEEvent.create(
                 SSEEventType.PHASE_CHANGE,
@@ -65,7 +64,6 @@ class CriticNode:
             )
         )
 
-        # --- Build context for the LLM ---
         search_results = state.get("search_results", [])
         outline = state.get("plan", {}).get("outline", [])
 
@@ -83,12 +81,10 @@ class CriticNode:
             },
         ]
 
-        # --- Call LLM ---
         result = await self._llm.generate_structured(
             messages, schema={"type": "object"}
         )
 
-        # --- Parse into CritiqueResult ---
         critique: CritiqueResult = CritiqueResult(
             has_conflicts=result.get("has_conflicts", False),
             conflicts=result.get("conflicts", []),
@@ -97,7 +93,6 @@ class CriticNode:
             recommendation=result.get("recommendation", "proceed"),
         )
 
-        # --- Emit conflict detection event ---
         if critique["has_conflicts"]:
             conflict_details = "; ".join(
                 f"{c.get('topic', '未知主题')}: {c.get('claim_a', '')} vs {c.get('claim_b', '')}"
@@ -117,7 +112,6 @@ class CriticNode:
                 )
             )
 
-        # --- Determine next phase based on recommendation ---
         retry_count = state.get("retry_count", 0)
         max_retries = state.get("max_retries", 3)
         sub_tasks = list(state.get("sub_tasks", []))
@@ -128,7 +122,6 @@ class CriticNode:
             next_phase = ResearchPhase.SEARCHING.value
             retry_count += 1
 
-            # Emit retry event
             missing_desc = ", ".join(critique["missing_aspects"]) if critique["missing_aspects"] else "需要更多信息"
             sse_events.append(
                 SSEEvent.create(
@@ -144,12 +137,10 @@ class CriticNode:
                 )
             )
 
-            # Reset failed sub_tasks back to pending
             for task in sub_tasks:
                 if task["status"] == "failed":
                     task["status"] = "pending"
 
-            # Add missing aspects as new sub_tasks
             for i, aspect in enumerate(critique["missing_aspects"]):
                 sub_tasks.append(
                     SubTask(
@@ -160,7 +151,6 @@ class CriticNode:
                     )
                 )
         else:
-            # retry_search but max retries exceeded
             next_phase = ResearchPhase.ERROR.value
             sse_events.append(
                 SSEEvent.create(
@@ -180,7 +170,7 @@ class CriticNode:
             "retry_count": retry_count,
             "sub_tasks": sub_tasks,
             "_sse_events": sse_events,
-            "_id_gen": id_gen,
+            "_last_event_id": id_gen.current,
         }
 
     @staticmethod

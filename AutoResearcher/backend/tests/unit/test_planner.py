@@ -5,12 +5,14 @@ Demonstrates how to mock LLMClient and test state transitions independently.
 
 from __future__ import annotations
 
+import asyncio
 from typing import Any
 
 import pytest
 
 from app.agent.nodes.planner import PlannerNode
 from app.agent.state import ResearchPhase, create_initial_state
+from app.core import transient_store
 from app.models.events import EventIDGenerator
 
 
@@ -66,8 +68,14 @@ def mock_planner_response() -> dict[str, Any]:
 
 def _make_state(query: str = "test query") -> dict[str, Any]:
     state = create_initial_state("test-id", query)
-    state["_id_gen"] = EventIDGenerator()
+    transient_store.register("test-id", EventIDGenerator(), asyncio.Queue())
     return state
+
+
+@pytest.fixture(autouse=True)
+def cleanup():
+    yield
+    transient_store.unregister("test-id")
 
 
 @pytest.mark.asyncio

@@ -1,18 +1,19 @@
 """
-Human feedback node — pauses the workflow to collect user input on the research outline.
-Uses asyncio.Event for pause/resume coordination with the feedback API endpoint.
+Human feedback node — pauses the workflow via LangGraph interrupt() to collect
+user input on the research outline. On resume, interrupt() returns the feedback
+value passed via Command(resume=...).
 """
 
 from __future__ import annotations
 
-import asyncio
 import time
 from typing import Any
 
+from langgraph.types import interrupt
+
 from app.agent.state import ResearchPhase
-from app.core import session_registry
+from app.core import transient_store
 from app.models.events import (
-    EventIDGenerator,
     HumanInputNeededPayload,
     PhaseChangePayload,
     SSEEvent,
@@ -21,20 +22,18 @@ from app.models.events import (
 
 
 class HumanFeedbackNode:
-    """Pauses graph execution and waits for human feedback on the research outline."""
+    """Pauses graph execution via interrupt() and waits for human feedback."""
 
     async def __call__(self, state: dict[str, Any]) -> dict[str, Any]:
-        id_gen: EventIDGenerator = state.get("_id_gen", EventIDGenerator())
-        event_queue: asyncio.Queue | None = state.get("_event_queue")
-
         research_id = state["research_id"]
+        id_gen = transient_store.get_id_gen(research_id)
+        event_queue = transient_store.get_event_queue(research_id)
+
         input_id = f"{research_id}-input-{int(time.time() * 1000)}"
 
-        # Build outline for display from plan
         outline = state.get("plan", {}).get("outline", [])
         outline_payload = [{"section": s, "key_points": []} for s in outline]
 
-        # --- Emit phase change ---
         phase_event = SSEEvent.create(
             SSEEventType.PHASE_CHANGE,
             PhaseChangePayload(
@@ -45,7 +44,6 @@ class HumanFeedbackNode:
             id_gen,
         )
 
-        # --- Emit human_input_needed ---
         input_event = SSEEvent.create(
             SSEEventType.HUMAN_INPUT_NEEDED,
             HumanInputNeededPayload(
@@ -57,24 +55,23 @@ class HumanFeedbackNode:
             id_gen,
         )
 
-        # Push events immediately via queue so they reach the SSE stream
+        # Push events via queue (only on first execution; on resume event_queue is None)
         if event_queue:
             await event_queue.put(phase_event)
             await event_queue.put(input_event)
 
-        # --- Wait for feedback ---
-        feedback_event = asyncio.Event()
-        session = session_registry.get_session(research_id)
-        session["_feedback_event"] = feedback_event
-        session["_input_id"] = input_id
+        # interrupt() raises GraphInterrupt on first call, halting execution.
+        # On resume via Command(resume=value), the node re-executes from the top;
+        # event_queue will be None (transient_store cleared between runs),
+        # so events are skipped. interrupt() returns the resume value immediately.
+        feedback_data = interrupt({
+            "input_id": input_id,
+            "outline": outline_payload,
+        })
 
-        await feedback_event.wait()
+        feedback = feedback_data.get("feedback", "") if isinstance(feedback_data, dict) else str(feedback_data)
+        modified_outline = feedback_data.get("modified_outline") if isinstance(feedback_data, dict) else None
 
-        # --- Retrieve feedback ---
-        feedback = session.get("human_feedback", "")
-        modified_outline = session.get("modified_outline")
-
-        # Update plan if outline was modified
         updated_plan = dict(state.get("plan", {}))
         if modified_outline:
             updated_plan["outline"] = [
@@ -87,6 +84,6 @@ class HumanFeedbackNode:
             "human_input_requested": False,
             "human_feedback": feedback or None,
             "plan": updated_plan,
-            "_sse_events": [],  # Already pushed via queue
-            "_id_gen": id_gen,
+            "_sse_events": [],
+            "_last_event_id": id_gen.current,
         }

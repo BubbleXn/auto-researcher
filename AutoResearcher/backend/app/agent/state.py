@@ -1,16 +1,16 @@
 """
 Research agent state schema.
-ALL fields MUST be JSON-serializable for SQLite checkpoint compatibility.
-_sse_events, _id_gen, and _event_queue are transient — used for SSE streaming, excluded from checkpoints.
+ALL fields MUST be JSON-serializable for checkpoint compatibility.
+_sse_events is transient (replaced on each node output, not accumulated).
+Non-serializable objects (EventIDGenerator, asyncio.Queue) live in transient_store.
 """
 
 from __future__ import annotations
 
-import asyncio
 from enum import Enum
 from typing import Annotated, Any, TypedDict
 
-from app.models.events import EventIDGenerator, SSEEvent
+from app.models.events import SSEEvent
 
 
 def _replace_sse_events(left: list[SSEEvent], right: list[SSEEvent]) -> list[SSEEvent]:
@@ -62,11 +62,10 @@ class ResearchState(TypedDict, total=False):
     """
     LangGraph state for the research workflow.
 
-    Every field is JSON-serializable (str, int, float, bool, list, dict, None).
-    No datetime objects, no custom classes, no callables.
-
-    _sse_events: transient, replaced (not accumulated) on each node output.
-    _id_gen: transient, passed through nodes for monotonic event IDs.
+    All fields are JSON-serializable and checkpoint-safe.
+    _sse_events uses a replace-reducer (not accumulated across nodes).
+    _last_event_id persists the EventIDGenerator counter across interrupt/resume.
+    Non-serializable transient objects (id_gen, event_queue) are in transient_store.
     """
 
     research_id: str
@@ -84,9 +83,8 @@ class ResearchState(TypedDict, total=False):
     human_input_requested: bool
     human_feedback: str | None
     messages: list[dict[str, str]]  # agent reasoning trace
+    _last_event_id: int
     _sse_events: Annotated[list[SSEEvent], _replace_sse_events]
-    _id_gen: EventIDGenerator
-    _event_queue: asyncio.Queue
 
 
 def create_initial_state(research_id: str, query: str) -> ResearchState:
@@ -107,4 +105,5 @@ def create_initial_state(research_id: str, query: str) -> ResearchState:
         human_input_requested=False,
         human_feedback=None,
         messages=[],
+        _last_event_id=0,
     )

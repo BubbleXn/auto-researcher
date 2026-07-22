@@ -6,12 +6,14 @@ SSE event emission, and retry logic.
 
 from __future__ import annotations
 
+import asyncio
 from typing import Any
 
 import pytest
 
 from app.agent.nodes.critic import CriticNode
 from app.agent.state import ResearchPhase
+from app.core import transient_store
 from app.models.events import EventIDGenerator
 
 
@@ -50,6 +52,7 @@ class MockLLMClient:
 
 
 def _make_state_with_results() -> dict[str, Any]:
+    transient_store.register("test-id", EventIDGenerator(), asyncio.Queue())
     return {
         "research_id": "test-id",
         "query": "test query",
@@ -65,8 +68,13 @@ def _make_state_with_results() -> dict[str, Any]:
         ],
         "retry_count": 0,
         "max_retries": 3,
-        "_id_gen": EventIDGenerator(),
     }
+
+
+@pytest.fixture(autouse=True)
+def cleanup():
+    yield
+    transient_store.unregister("test-id")
 
 
 @pytest.mark.asyncio

@@ -106,6 +106,7 @@ export default function HomePage() {
               <HumanInputPrompt
                 prompt={session.pendingInput.prompt}
                 options={session.pendingInput.options}
+                outline={session.pendingInput.outline}
                 onSubmit={(response) => {
                   const inputId = session.pendingInput!.inputId;
                   submitInput(inputId, response);

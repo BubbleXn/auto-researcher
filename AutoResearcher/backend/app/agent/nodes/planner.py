@@ -9,9 +9,9 @@ from typing import Any
 
 from app.agent.clients.protocols import LLMClient
 from app.agent.state import ResearchPhase, SubTask
+from app.core import transient_store
 from app.models.events import (
     AgentStepPayload,
-    EventIDGenerator,
     PhaseChangePayload,
     SSEEvent,
     SSEEventType,
@@ -38,9 +38,8 @@ class PlannerNode:
         self._llm = llm
 
     async def __call__(self, state: dict[str, Any]) -> dict[str, Any]:
-        id_gen: EventIDGenerator = state.get("_id_gen", EventIDGenerator())
+        id_gen = transient_store.get_id_gen(state["research_id"])
         sse_events: list[SSEEvent] = []
-        prev_phase = state.get("phase")
 
         sse_events.append(
             SSEEvent.create(
@@ -96,5 +95,5 @@ class PlannerNode:
             "messages": state.get("messages", [])
             + [{"role": "assistant", "content": json.dumps(result, ensure_ascii=False)}],
             "_sse_events": sse_events,
-            "_id_gen": id_gen,
+            "_last_event_id": id_gen.current,
         }

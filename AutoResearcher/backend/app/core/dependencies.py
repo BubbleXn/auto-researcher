@@ -7,9 +7,7 @@ import logging
 from functools import lru_cache
 from typing import Any
 
-from app.agent.clients.llm import OpenAILLMClient
 from app.agent.clients.protocols import LLMClient, SearchClient, VectorStoreClient
-from app.agent.clients.search import TavilySearchClient
 from app.core.config import settings
 
 logger = logging.getLogger(__name__)
@@ -37,16 +35,29 @@ def get_semaphore() -> asyncio.Semaphore:
 
 @lru_cache
 def get_llm_client() -> LLMClient:
+    if settings.use_mock:
+        from app.agent.clients.mock import MockLLMClient
+        logger.info("Using MockLLMClient (USE_MOCK=true)")
+        return MockLLMClient()
+    from app.agent.clients.llm import OpenAILLMClient
     return OpenAILLMClient()
 
 
 @lru_cache
 def get_search_client() -> SearchClient:
+    if settings.use_mock:
+        from app.agent.clients.mock import MockSearchClient
+        logger.info("Using MockSearchClient (USE_MOCK=true)")
+        return MockSearchClient()
+    from app.agent.clients.search import TavilySearchClient
     return TavilySearchClient()
 
 
 @lru_cache
 def get_vectorstore_client() -> VectorStoreClient:
+    if settings.use_mock:
+        logger.info("Using NoOpVectorStoreClient (USE_MOCK=true)")
+        return _NoOpVectorStoreClient()  # type: ignore[return-value]
     try:
         from app.agent.clients.vectorstore import ChromaVectorStoreClient
         return ChromaVectorStoreClient(

@@ -1,23 +1,34 @@
 "use client";
 
 import { useState } from "react";
-import { MessageSquare, SkipForward, ArrowUp } from "lucide-react";
+import { MessageSquare, SkipForward, ArrowUp, ListChecks } from "lucide-react";
 import { cn } from "@/lib/cn";
+
+interface OutlineItem {
+  section: string;
+  key_points?: string[];
+}
 
 interface HumanInputPromptProps {
   prompt: string;
   options?: string[];
+  outline?: OutlineItem[];
   onSubmit: (response: string) => void;
   onSkip: () => void;
 }
 
+const DEFAULT_OPTIONS = ["继续生成报告", "需要补充搜索", "调整大纲后继续"];
+
 export function HumanInputPrompt({
   prompt,
   options,
+  outline,
   onSubmit,
   onSkip,
 }: HumanInputPromptProps) {
   const [response, setResponse] = useState("");
+
+  const displayOptions = options && options.length > 0 ? options : DEFAULT_OPTIONS;
 
   const handleSubmit = () => {
     const trimmed = response.trim();
@@ -33,19 +44,39 @@ export function HumanInputPrompt({
         <p className="text-sm text-text-primary leading-relaxed">{prompt}</p>
       </div>
 
-      {options && options.length > 0 && (
-        <div className="flex flex-wrap gap-2 mb-3 pl-6">
-          {options.map((opt) => (
-            <button
-              key={opt}
-              onClick={() => onSubmit(opt)}
-              className="px-3 py-1.5 text-sm rounded-full bg-surface-700 text-text-secondary hover:text-text-primary hover:bg-surface-600 border border-surface-500/40 transition-colors"
-            >
-              {opt}
-            </button>
-          ))}
+      {outline && outline.length > 0 && (
+        <div className="mb-3 pl-6">
+          <div className="flex items-center gap-1.5 mb-2">
+            <ListChecks className="w-3.5 h-3.5 text-text-tertiary" />
+            <span className="text-xs text-text-tertiary font-medium">研究大纲</span>
+          </div>
+          <div className="space-y-1">
+            {outline.map((item, i) => (
+              <div
+                key={i}
+                className="flex items-start gap-2 px-3 py-1.5 rounded-lg bg-surface-700/50 text-sm"
+              >
+                <span className="text-text-tertiary shrink-0 font-mono text-xs mt-0.5">
+                  {i + 1}.
+                </span>
+                <span className="text-text-secondary">{item.section}</span>
+              </div>
+            ))}
+          </div>
         </div>
       )}
+
+      <div className="flex flex-wrap gap-2 mb-3 pl-6">
+        {displayOptions.map((opt) => (
+          <button
+            key={opt}
+            onClick={() => onSubmit(opt)}
+            className="px-3 py-1.5 text-sm rounded-full bg-surface-700 text-text-secondary hover:text-text-primary hover:bg-surface-600 border border-surface-500/40 transition-colors"
+          >
+            {opt}
+          </button>
+        ))}
+      </div>
 
       <div className="flex items-center gap-2 pl-6">
         <input

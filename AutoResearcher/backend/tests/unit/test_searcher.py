@@ -5,12 +5,14 @@ Demonstrates how to mock SearchClient and test search execution + progress track
 
 from __future__ import annotations
 
+import asyncio
 from typing import Any
 
 import pytest
 
 from app.agent.nodes.searcher import SearcherNode
 from app.agent.state import ResearchPhase
+from app.core import transient_store
 from app.models.events import EventIDGenerator
 
 
@@ -49,7 +51,9 @@ class MockSearchClient:
 
 
 def _make_state_with_tasks() -> dict[str, Any]:
+    transient_store.register("test-id", EventIDGenerator(), asyncio.Queue())
     return {
+        "research_id": "test-id",
         "query": "test query",
         "phase": "planning",
         "sub_tasks": [
@@ -57,8 +61,13 @@ def _make_state_with_tasks() -> dict[str, Any]:
             {"id": "task_2", "query": "subtask 2", "status": "pending", "result": None},
         ],
         "search_results": [],
-        "_id_gen": EventIDGenerator(),
     }
+
+
+@pytest.fixture(autouse=True)
+def cleanup():
+    yield
+    transient_store.unregister("test-id")
 
 
 @pytest.mark.asyncio
@@ -97,6 +106,7 @@ async def test_searcher_handles_search_failure() -> None:
 @pytest.mark.asyncio
 async def test_searcher_skips_completed_tasks() -> None:
     state = {
+        "research_id": "test-id",
         "query": "test",
         "phase": "planning",
         "sub_tasks": [
@@ -104,8 +114,8 @@ async def test_searcher_skips_completed_tasks() -> None:
             {"id": "task_2", "query": "pending", "status": "pending", "result": None},
         ],
         "search_results": [],
-        "_id_gen": EventIDGenerator(),
     }
+    transient_store.register("test-id", EventIDGenerator(), asyncio.Queue())
     search = MockSearchClient()
     searcher = SearcherNode(search=search)
 

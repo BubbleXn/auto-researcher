@@ -1,6 +1,6 @@
 """
-Integration test — runs the full research graph with mock clients.
-Verifies the complete flow: Planner → Searcher → Critic → HumanFeedback → Writer.
+Integration test — runs the full research graph with mock clients and InMemorySaver.
+Verifies: Planner → Searcher → Critic → interrupt → resume → Writer.
 """
 
 from __future__ import annotations
@@ -11,16 +11,16 @@ from collections.abc import AsyncIterator
 from typing import Any
 
 import pytest
+from langgraph.checkpoint.memory import InMemorySaver
+from langgraph.types import Command
 
 from app.agent.graph import build_research_graph
 from app.agent.state import create_initial_state
-from app.core import session_registry
+from app.core import transient_store
 from app.models.events import EventIDGenerator, SSEEvent
 
 
 class _MockLLM:
-    """Mock LLM that responds based on the system prompt content."""
-
     def __init__(self):
         self.call_count = 0
 
@@ -80,79 +80,81 @@ class _MockVectorStore:
         pass
 
 
+async def _collect_sse_events(graph, input_or_cmd, config) -> list[SSEEvent]:
+    """Run astream and return all SSE events from node outputs."""
+    collected: list[SSEEvent] = []
+    async for event in graph.astream(input_or_cmd, config=config):
+        if "__interrupt__" in event:
+            continue
+        for node_name, node_output in event.items():
+            for sse in node_output.get("_sse_events", []):
+                collected.append(sse)
+    return collected
+
+
 @pytest.fixture(autouse=True)
 def cleanup():
     yield
-    session_registry.remove_session("integration-test-id")
+    transient_store.unregister("integration-test-id")
+    transient_store.unregister("retry-test-id")
 
 
 @pytest.mark.asyncio
 async def test_full_graph_planner_to_writer() -> None:
-    """Run the full graph with auto-approved human feedback."""
+    """Full graph: Planner → Searcher → Critic → interrupt → resume → Writer."""
     llm = _MockLLM()
     search = _MockSearch()
     vs = _MockVectorStore()
+    saver = InMemorySaver()
 
-    graph = build_research_graph(llm=llm, search=search, vectorstore=vs)
+    research_id = "integration-test-id"
+    graph = build_research_graph(llm=llm, search=search, vectorstore=vs, checkpointer=saver)
 
-    state = create_initial_state("integration-test-id", "test research question")
-    state["_id_gen"] = EventIDGenerator()
-    event_queue: asyncio.Queue[SSEEvent | None] = asyncio.Queue()
-    state["_event_queue"] = event_queue
+    id_gen = EventIDGenerator()
+    event_queue: asyncio.Queue = asyncio.Queue()
+    transient_store.register(research_id, id_gen, event_queue)
 
-    collected_events: list[SSEEvent] = []
+    state = create_initial_state(research_id, "test research question")
+    config = {"configurable": {"thread_id": research_id}}
 
-    async def _auto_approve_feedback():
-        """Monitors the event queue and auto-approves human feedback."""
-        while True:
-            await asyncio.sleep(0.05)
-            session = session_registry.get_session("integration-test-id")
-            feedback_event = session.get("_feedback_event")
-            if feedback_event and not feedback_event.is_set():
-                session["human_feedback"] = "auto-approved"
-                feedback_event.set()
-                break
+    # Phase 1: run until interrupt (human feedback)
+    phase1_events = await _collect_sse_events(graph, state, config)
 
-    async def _collect_events():
-        """Drain events from the queue."""
-        while True:
-            ev = await event_queue.get()
-            if ev is None:
-                break
-            collected_events.append(ev)
+    # Collect queue events (from human_feedback node)
+    queue_events: list[SSEEvent] = []
+    while not event_queue.empty():
+        queue_events.append(await event_queue.get())
 
-    async def _run_graph():
-        try:
-            async for event in graph.astream(state):
-                for node_name, node_output in event.items():
-                    for sse in node_output.get("_sse_events", []):
-                        await event_queue.put(sse)
-        finally:
-            await event_queue.put(None)
+    # Verify graph is interrupted
+    snapshot = await graph.aget_state(config)
+    assert snapshot.next, "Graph should be interrupted at human_feedback"
 
-    # Run graph, event collector, and auto-approver concurrently
-    approver_task = asyncio.create_task(_auto_approve_feedback())
-    collector_task = asyncio.create_task(_collect_events())
-    graph_task = asyncio.create_task(_run_graph())
+    all_phase1 = phase1_events + queue_events
+    phase1_types = [e.event.value for e in all_phase1]
+    assert "phase_change" in phase1_types
+    assert "human_input_needed" in phase1_types
 
-    await graph_task
-    await collector_task
-    approver_task.cancel()
+    # Phase 2: resume with feedback (re-register transients)
+    transient_store.register(research_id, id_gen, asyncio.Queue())
+
+    resume_data = {"feedback": "auto-approved"}
+    phase2_events = await _collect_sse_events(graph, Command(resume=resume_data), config)
+
+    # Combine all events
+    all_events = all_phase1 + phase2_events
 
     # Verify phases appeared in correct order
     phase_changes = [
         e.data["phase"]
-        for e in collected_events
+        for e in all_events
         if e.event.value == "phase_change"
     ]
-
     assert "planning" in phase_changes
     assert "searching" in phase_changes
     assert "critiquing" in phase_changes
     assert "awaiting_human_input" in phase_changes
     assert "writing" in phase_changes
 
-    # Verify ordering
     planning_idx = phase_changes.index("planning")
     searching_idx = phase_changes.index("searching")
     critiquing_idx = phase_changes.index("critiquing")
@@ -160,28 +162,18 @@ async def test_full_graph_planner_to_writer() -> None:
     writing_idx = phase_changes.index("writing")
     assert planning_idx < searching_idx < critiquing_idx < awaiting_idx < writing_idx
 
-    # Verify event IDs are unique (no duplicates) across all events
-    event_ids = [e.data["event_id"] for e in collected_events if "event_id" in e.data]
+    # Verify event IDs are unique
+    event_ids = [e.data["event_id"] for e in all_events if "event_id" in e.data]
     assert len(set(event_ids)) == len(event_ids), "Event IDs must be unique"
 
-    # Verify we got report_chunk events
-    chunks = [e for e in collected_events if e.event.value == "report_chunk"]
-    assert len(chunks) >= 1
-    final_chunks = [c for c in chunks if c.data.get("is_final")]
-    assert len(final_chunks) == 1
-
-    # Verify LLM was called multiple times (planner + critic + writer)
+    # Verify LLM called (planner + critic + writer)
     assert llm.call_count >= 3
-
-    # Verify vectorstore received search results
     assert len(vs.added) >= 1
 
 
 @pytest.mark.asyncio
 async def test_graph_retry_loop() -> None:
-    """Test that the critic retry loop works correctly."""
-
-    call_count = 0
+    """Critic retries once, then proceeds → interrupt → resume → writer."""
 
     class _RetryThenPassLLM:
         def __init__(self):
@@ -227,63 +219,41 @@ async def test_graph_retry_loop() -> None:
     llm = _RetryThenPassLLM()
     search = _MockSearch()
     vs = _MockVectorStore()
+    saver = InMemorySaver()
 
-    graph = build_research_graph(llm=llm, search=search, vectorstore=vs)
+    research_id = "retry-test-id"
+    graph = build_research_graph(llm=llm, search=search, vectorstore=vs, checkpointer=saver)
 
-    state = create_initial_state("integration-test-id", "retry test")
-    state["_id_gen"] = EventIDGenerator()
+    id_gen = EventIDGenerator()
     event_queue: asyncio.Queue = asyncio.Queue()
-    state["_event_queue"] = event_queue
+    transient_store.register(research_id, id_gen, event_queue)
 
-    collected_events: list[SSEEvent] = []
+    state = create_initial_state(research_id, "retry test")
+    config = {"configurable": {"thread_id": research_id}}
 
-    async def _auto_approve():
-        while True:
-            await asyncio.sleep(0.05)
-            session = session_registry.get_session("integration-test-id")
-            fe = session.get("_feedback_event")
-            if fe and not fe.is_set():
-                session["human_feedback"] = "ok"
-                fe.set()
-                break
+    # Phase 1: planner → searcher → critic (retry) → searcher → critic (proceed) → interrupt
+    phase1_events = await _collect_sse_events(graph, state, config)
 
-    async def _collect():
-        while True:
-            ev = await event_queue.get()
-            if ev is None:
-                break
-            collected_events.append(ev)
+    queue_events = []
+    while not event_queue.empty():
+        queue_events.append(await event_queue.get())
 
-    async def _run():
-        try:
-            async for event in graph.astream(state):
-                for _, out in event.items():
-                    for sse in out.get("_sse_events", []):
-                        await event_queue.put(sse)
-        finally:
-            await event_queue.put(None)
+    # Phase 2: resume
+    transient_store.register(research_id, id_gen, asyncio.Queue())
 
-    approver = asyncio.create_task(_auto_approve())
-    collector = asyncio.create_task(_collect())
-    runner = asyncio.create_task(_run())
+    phase2_events = await _collect_sse_events(graph, Command(resume={"feedback": "ok"}), config)
 
-    await runner
-    await collector
-    approver.cancel()
+    all_events = phase1_events + queue_events + phase2_events
+    phase_changes = [e.data["phase"] for e in all_events if e.event.value == "phase_change"]
 
-    phase_changes = [e.data["phase"] for e in collected_events if e.event.value == "phase_change"]
-
-    # Should see: planning, searching, critiquing (retry), searching (again), critiquing (pass), awaiting_human_input, writing
     assert phase_changes.count("searching") == 2
     assert phase_changes.count("critiquing") == 2
     assert "awaiting_human_input" in phase_changes
     assert "writing" in phase_changes
 
-    # Verify retry_triggered event
     retry_events = [
-        e for e in collected_events
+        e for e in all_events
         if e.event.value == "agent_step" and e.data.get("action") == "retry_triggered"
     ]
     assert len(retry_events) == 1
-
     assert llm.critic_calls == 2

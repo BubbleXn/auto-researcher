@@ -5,14 +5,13 @@ Uses streaming LLM output to push report_chunk events in real-time via asyncio.Q
 
 from __future__ import annotations
 
-import asyncio
 from typing import Any
 
 from app.agent.clients.protocols import LLMClient, VectorStoreClient
 from app.agent.state import ResearchPhase
+from app.core import transient_store
 from app.models.events import (
     AgentStepPayload,
-    EventIDGenerator,
     PhaseChangePayload,
     ReportChunkPayload,
     SSEEvent,
@@ -39,8 +38,9 @@ class WriterNode:
         self._vectorstore = vectorstore
 
     async def __call__(self, state: dict[str, Any]) -> dict[str, Any]:
-        id_gen: EventIDGenerator = state.get("_id_gen", EventIDGenerator())
-        event_queue: asyncio.Queue | None = state.get("_event_queue")
+        research_id = state["research_id"]
+        id_gen = transient_store.get_id_gen(research_id)
+        event_queue = transient_store.get_event_queue(research_id)
         sse_events: list[SSEEvent] = []
 
         phase_event = SSEEvent.create(
@@ -71,7 +71,7 @@ class WriterNode:
                         extra_parts.append(f"[{source}] {r.get('document', '')[:500]}")
                     extra_context = "\n---\n".join(extra_parts)
             except Exception:
-                pass  # vectorstore query is best-effort
+                pass
 
         user_content = (
             f"Research question: {state['query']}\n\n"
@@ -162,7 +162,7 @@ class WriterNode:
             "report": report,
             "sources": sources,
             "_sse_events": sse_events,
-            "_id_gen": id_gen,
+            "_last_event_id": id_gen.current,
         }
 
     @staticmethod
