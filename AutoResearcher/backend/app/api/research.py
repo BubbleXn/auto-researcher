@@ -19,6 +19,7 @@ from app.core.dependencies import (
     get_semaphore,
     get_vectorstore_client,
 )
+from app.core import session_registry
 from app.models.events import (
     DonePayload,
     ErrorPayload,
@@ -51,6 +52,9 @@ async def _run_research_stream(
     start_time = time.time()
     id_gen = EventIDGenerator()
     event_queue: asyncio.Queue[SSEEvent | None] = asyncio.Queue()
+
+    # Initialize session in shared registry
+    session_registry.get_session(research_id)
 
     yield SSEEvent.create(
         SSEEventType.RESEARCH_START,
@@ -112,6 +116,7 @@ async def _run_research_stream(
         ).to_sse()
     finally:
         _active_research.pop(research_id, None)
+        session_registry.remove_session(research_id)
 
 
 @router.post("/start")
@@ -148,10 +153,14 @@ async def start_research(
 @router.post("/feedback")
 async def submit_feedback(request: HumanFeedbackRequest) -> dict:
     """Submit human feedback for a paused research task."""
-    if request.research_id not in _active_research:
+    session = session_registry.get_session(request.research_id)
+    if not session:
         return {"status": "error", "message": "Research task not found or already completed"}
-    _active_research[request.research_id]["human_feedback"] = request.feedback
-    _active_research[request.research_id]["modified_outline"] = request.modified_outline
+    session["human_feedback"] = request.feedback
+    session["modified_outline"] = request.modified_outline
+    feedback_event: asyncio.Event | None = session.get("_feedback_event")
+    if feedback_event:
+        feedback_event.set()
     return {"status": "ok", "research_id": request.research_id}
 
 

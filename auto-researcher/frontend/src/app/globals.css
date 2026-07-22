@@ -83,6 +83,18 @@
   .bg-phase-searching { background-color: color-mix(in srgb, var(--color-phase-searching) 8%, transparent); }
   .bg-phase-critiquing { background-color: color-mix(in srgb, var(--color-phase-critiquing) 8%, transparent); }
   .bg-phase-writing { background-color: color-mix(in srgb, var(--color-phase-writing) 8%, transparent); }
+
+  .citation-link {
+    background: color-mix(in srgb, var(--color-phase-searching) 6%, transparent);
+    transition: background-color 0.2s ease;
+  }
+  .citation-link:hover {
+    background: color-mix(in srgb, var(--color-phase-searching) 14%, transparent);
+  }
+
+  .animate-in {
+    animation: fade-in 0.3s ease-out both;
+  }
 }
 
 @media print {
@@ -92,5 +104,16 @@
   }
   .no-print {
     display: none !important;
+  }
+}
+
+@keyframes fade-in {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
   }
 }

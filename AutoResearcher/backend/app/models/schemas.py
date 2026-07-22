@@ -14,6 +14,7 @@ class HumanFeedbackRequest(BaseModel):
     research_id: str
     feedback: str
     modified_outline: list[dict] | None = None
+    input_id: str | None = None
 
 
 class ResearchStatusResponse(BaseModel):
@@ -27,3 +28,10 @@ class HealthResponse(BaseModel):
     status: str
     version: str
     services: dict[str, str]
+
+
+class DocumentUploadResponse(BaseModel):
+    filename: str
+    total_chunks: int
+    total_pages: int
+    document_ids: list[str]

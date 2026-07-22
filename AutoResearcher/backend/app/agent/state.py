@@ -23,6 +23,7 @@ class ResearchPhase(str, Enum):
     PLANNING = "planning"
     SEARCHING = "searching"
     CRITIQUING = "critiquing"
+    AWAITING_HUMAN_INPUT = "awaiting_human_input"
     WRITING = "writing"
     COMPLETED = "completed"
     ERROR = "error"

@@ -27,6 +27,12 @@ const server = createServer(async (req, res) => {
     return;
   }
 
+  if (req.method === "POST" && req.url?.startsWith("/api/research/feedback")) {
+    res.writeHead(200, { ...CORS_HEADERS, "Content-Type": "application/json" });
+    res.end(JSON.stringify({ status: "ok" }));
+    return;
+  }
+
   if (req.method === "POST" && req.url?.startsWith("/api/research/input")) {
     res.writeHead(200, { ...CORS_HEADERS, "Content-Type": "application/json" });
     res.end(JSON.stringify({ ok: true }));

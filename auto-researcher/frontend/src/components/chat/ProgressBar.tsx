@@ -6,14 +6,15 @@ export function ProgressBar({ current, total, detail }: ProgressData) {
   return (
     <div className="py-1">
       <div className="flex items-center gap-2 text-xs mb-1.5">
-        <span className="text-text-secondary tabular-nums">
+        <span className="text-text-secondary tabular-nums font-medium">
           {current}/{total}
         </span>
-        <span className="text-text-tertiary">{detail}</span>
+        <span className="text-text-tertiary flex-1">{detail}</span>
+        <span className="text-text-tertiary tabular-nums">{pct}%</span>
       </div>
       <div className="h-1 bg-surface-600 rounded-full overflow-hidden">
         <div
-          className="h-full bg-text-secondary rounded-full transition-all duration-500 ease-out"
+          className="h-full bg-phase-searching rounded-full transition-all duration-500 ease-out"
           style={{ width: `${pct}%` }}
         />
       </div>

@@ -8,7 +8,7 @@ from __future__ import annotations
 import asyncio
 from typing import Any
 
-from app.agent.clients.protocols import LLMClient
+from app.agent.clients.protocols import LLMClient, VectorStoreClient
 from app.agent.state import ResearchPhase
 from app.models.events import (
     AgentStepPayload,
@@ -34,8 +34,9 @@ CHUNK_FLUSH_SIZE = 150
 
 
 class WriterNode:
-    def __init__(self, llm: LLMClient):
+    def __init__(self, llm: LLMClient, vectorstore: VectorStoreClient | None = None):
         self._llm = llm
+        self._vectorstore = vectorstore
 
     async def __call__(self, state: dict[str, Any]) -> dict[str, Any]:
         id_gen: EventIDGenerator = state.get("_id_gen", EventIDGenerator())
@@ -46,7 +47,7 @@ class WriterNode:
             SSEEventType.PHASE_CHANGE,
             PhaseChangePayload(
                 phase=ResearchPhase.WRITING.value,
-                from_phase=ResearchPhase.SEARCHING.value,
+                from_phase=ResearchPhase.CRITIQUING.value,
                 message="正在综合信息生成研究报告...",
             ),
             id_gen,
@@ -56,15 +57,35 @@ class WriterNode:
         search_context = self._build_context(state)
         outline = state.get("plan", {}).get("outline", [])
 
+        extra_context = ""
+        if self._vectorstore:
+            try:
+                vs_results = await self._vectorstore.query(
+                    query_text=state["query"],
+                    n_results=10,
+                )
+                if vs_results:
+                    extra_parts = []
+                    for r in vs_results:
+                        source = r.get("metadata", {}).get("source_filename", "database")
+                        extra_parts.append(f"[{source}] {r.get('document', '')[:500]}")
+                    extra_context = "\n---\n".join(extra_parts)
+            except Exception:
+                pass  # vectorstore query is best-effort
+
+        user_content = (
+            f"Research question: {state['query']}\n\n"
+            f"Outline: {outline}\n\n"
+            f"Search results:\n{search_context}"
+        )
+        if extra_context:
+            user_content += f"\n\nAdditional reference materials:\n{extra_context}"
+
         messages = [
             {"role": "system", "content": WRITER_SYSTEM_PROMPT},
             {
                 "role": "user",
-                "content": (
-                    f"Research question: {state['query']}\n\n"
-                    f"Outline: {outline}\n\n"
-                    f"Search results:\n{search_context}"
-                ),
+                "content": user_content,
             },
         ]
 

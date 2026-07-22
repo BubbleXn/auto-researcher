@@ -6,7 +6,7 @@ import { PHASE_LABELS, PHASE_COLORS } from "@/lib/constants";
 import { AgentStep } from "./AgentStep";
 import { ProgressBar } from "./ProgressBar";
 import { Spinner } from "@/components/shared/Spinner";
-import { ChevronDown, Check } from "lucide-react";
+import { ChevronDown, Check, Pause } from "lucide-react";
 import { cn } from "@/lib/cn";
 
 interface PhaseBlockProps {
@@ -30,7 +30,11 @@ export function PhaseBlock({ phase, isCurrent }: PhaseBlockProps) {
         )}
       >
         {phase.status === "active" ? (
-          <Spinner size="sm" className={cn("!text-current", colorClass)} />
+          phase.phase === "awaiting_human_input" ? (
+            <Pause className={cn("w-4 h-4", colorClass)} />
+          ) : (
+            <Spinner size="sm" className={cn("!text-current", colorClass)} />
+          )
         ) : phase.status === "completed" ? (
           <Check className={cn("w-4 h-4", colorClass)} />
         ) : (

@@ -10,7 +10,7 @@ import { ErrorBanner } from "@/components/shared/ErrorBanner";
 import { Spinner } from "@/components/shared/Spinner";
 import { useResearchSession } from "@/hooks/useResearchSession";
 import { useSSE } from "@/hooks/useSSE";
-import { SSE_ENDPOINT } from "@/lib/constants";
+import { SSE_ENDPOINT, HUMAN_INPUT_ENDPOINT } from "@/lib/constants";
 
 export default function HomePage() {
   const {
@@ -106,10 +106,32 @@ export default function HomePage() {
               <HumanInputPrompt
                 prompt={session.pendingInput.prompt}
                 options={session.pendingInput.options}
-                onSubmit={(response) =>
-                  submitInput(session.pendingInput!.inputId, response)
-                }
-                onSkip={() => skipInput(session.pendingInput!.inputId)}
+                onSubmit={(response) => {
+                  const inputId = session.pendingInput!.inputId;
+                  submitInput(inputId, response);
+                  fetch(HUMAN_INPUT_ENDPOINT, {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({
+                      research_id: session.researchId,
+                      input_id: inputId,
+                      feedback: response,
+                    }),
+                  }).catch(console.error);
+                }}
+                onSkip={() => {
+                  const inputId = session.pendingInput!.inputId;
+                  skipInput(inputId);
+                  fetch(HUMAN_INPUT_ENDPOINT, {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({
+                      research_id: session.researchId,
+                      input_id: inputId,
+                      feedback: "",
+                    }),
+                  }).catch(console.error);
+                }}
               />
             )}
 

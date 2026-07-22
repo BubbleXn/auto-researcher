@@ -1,4 +1,4 @@
-export type ResearchPhase = "planning" | "searching" | "critiquing" | "writing";
+export type ResearchPhase = "planning" | "searching" | "critiquing" | "awaiting_human_input" | "writing";
 
 export type SSEEventType =
   | "research_start"

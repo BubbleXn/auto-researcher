@@ -163,3 +163,42 @@ async def test_searcher_event_ids_are_monotonic() -> None:
     event_ids = [e.data["event_id"] for e in result["_sse_events"]]
     assert event_ids == sorted(event_ids)
     assert len(set(event_ids)) == len(event_ids)
+
+
+class MockVectorStoreClient:
+    def __init__(self, query_results=None):
+        self._query_results = query_results or []
+        self.added: list[dict] = []
+
+    async def add_documents(self, documents, metadatas, ids):
+        self.added.append({"documents": documents, "metadatas": metadatas, "ids": ids})
+
+    async def query(self, query_text, *, n_results=5, where=None):
+        return self._query_results
+
+    async def delete(self, ids):
+        pass
+
+
+@pytest.mark.asyncio
+async def test_searcher_stores_results_in_vectorstore() -> None:
+    search = MockSearchClient()
+    vs = MockVectorStoreClient()
+    searcher = SearcherNode(search=search, vectorstore=vs)
+    state = _make_state_with_tasks()
+    state["research_id"] = "test-id"
+
+    await searcher(state)
+
+    assert len(vs.added) == 1
+    assert len(vs.added[0]["documents"]) == 2  # 2 tasks, 1 result each
+
+
+@pytest.mark.asyncio
+async def test_searcher_works_without_vectorstore() -> None:
+    search = MockSearchClient()
+    searcher = SearcherNode(search=search, vectorstore=None)
+
+    result = await searcher(_make_state_with_tasks())
+
+    assert len(result["search_results"]) == 2  # should work fine without vectorstore

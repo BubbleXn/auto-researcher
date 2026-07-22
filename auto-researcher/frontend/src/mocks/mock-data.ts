@@ -147,21 +147,10 @@ export function createMockEventSequence(): Array<{
     {
       delay: 500,
       event: {
-        type: "human_input_needed",
-        phase: "searching",
-        prompt:
-          "已收集到 12 条相关信息。是否需要针对某个方向深入研究？可选择以下方向或自行指定：",
-        input_id: "input-001",
-        options: ["深入模型对比", "关注安全性", "聚焦实际应用案例", "当前信息足够"],
-      },
-    },
-    {
-      delay: 3000,
-      event: {
         type: "phase_change",
         phase: "critiquing",
         from_phase: "searching",
-        timestamp: ts(11),
+        timestamp: ts(8),
       },
     },
     {
@@ -172,7 +161,7 @@ export function createMockEventSequence(): Array<{
         step_id: "c1",
         action: "verify",
         detail: "检查信息来源权威性：发现 2 条来源可信度较低，标记处理...",
-        timestamp: ts(12),
+        timestamp: ts(9),
       },
     },
     {
@@ -183,15 +172,35 @@ export function createMockEventSequence(): Array<{
         step_id: "c2",
         action: "conflict_check",
         detail: "交叉验证数据：HumanEval 评测数据存在版本差异，以最新版为准",
-        timestamp: ts(12.8),
+        timestamp: ts(9.8),
       },
     },
     {
       delay: 500,
       event: {
         type: "phase_change",
-        phase: "writing",
+        phase: "awaiting_human_input",
         from_phase: "critiquing",
+        timestamp: ts(10.3),
+      },
+    },
+    {
+      delay: 500,
+      event: {
+        type: "human_input_needed",
+        phase: "awaiting_human_input",
+        prompt:
+          "已收集到 12 条相关信息。是否需要针对某个方向深入研究？可选择以下方向或自行指定：",
+        input_id: "input-001",
+        options: ["深入模型对比", "关注安全性", "聚焦实际应用案例", "当前信息足够"],
+      },
+    },
+    {
+      delay: 3000,
+      event: {
+        type: "phase_change",
+        phase: "writing",
+        from_phase: "awaiting_human_input",
         timestamp: ts(13.3),
       },
     },
