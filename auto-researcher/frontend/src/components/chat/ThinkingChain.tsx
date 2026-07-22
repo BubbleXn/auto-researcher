@@ -19,7 +19,7 @@ export function ThinkingChain({ phases, currentPhase }: ThinkingChainProps) {
         <div className="flex-1 min-w-0">
           {phases.map((phase, i) => (
             <PhaseBlock
-              key={phase.phase}
+              key={`${phase.phase}-${i}`}
               phase={phase}
               isLast={i === phases.length - 1}
               isCurrent={phase.phase === currentPhase}

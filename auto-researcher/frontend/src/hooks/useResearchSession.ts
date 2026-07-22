@@ -86,10 +86,18 @@ function handleSSEEvent(
           ? { ...p, status: "completed" as const, completedAt: event.timestamp }
           : p
       );
+      // Avoid duplicate phase entries (e.g. on interrupt/resume re-execution)
+      const alreadyExists = phases.some((p) => p.phase === event.phase);
       return {
         ...state,
         currentPhase: event.phase,
-        phases: [...phases, createPhaseState(event.phase, event.timestamp)],
+        phases: alreadyExists
+          ? phases.map((p) =>
+              p.phase === event.phase
+                ? { ...p, status: "active" as const, completedAt: null }
+                : p
+            )
+          : [...phases, createPhaseState(event.phase, event.timestamp)],
       };
     }
 
