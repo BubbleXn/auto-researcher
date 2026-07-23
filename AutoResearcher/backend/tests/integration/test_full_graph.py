@@ -135,7 +135,7 @@ async def test_full_graph_planner_to_writer() -> None:
     assert "human_input_needed" in phase1_types
 
     # Phase 2: resume with feedback (re-register transients)
-    transient_store.register(research_id, id_gen, asyncio.Queue())
+    transient_store.register(research_id, id_gen, asyncio.Queue(), is_resume=True)
 
     resume_data = {"feedback": "auto-approved"}
     phase2_events = await _collect_sse_events(graph, Command(resume=resume_data), config)
@@ -239,7 +239,7 @@ async def test_graph_retry_loop() -> None:
         queue_events.append(await event_queue.get())
 
     # Phase 2: resume
-    transient_store.register(research_id, id_gen, asyncio.Queue())
+    transient_store.register(research_id, id_gen, asyncio.Queue(), is_resume=True)
 
     phase2_events = await _collect_sse_events(graph, Command(resume={"feedback": "ok"}), config)
 

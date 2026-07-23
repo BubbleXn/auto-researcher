@@ -45,10 +45,9 @@ def _make_state(research_id: str = "test-feedback-id") -> dict[str, Any]:
 @pytest.fixture(autouse=True)
 def cleanup():
     yield
-    transient_store.unregister("test-feedback-id")
-    transient_store.unregister("test-interrupt-1")
-    transient_store.unregister("test-resume-1")
-    transient_store.unregister("test-outline-1")
+    for rid in ["test-feedback-id", "test-interrupt-1", "test-resume-1",
+                "test-outline-1", "test-route-search"]:
+        transient_store.unregister(rid)
 
 
 @pytest.mark.asyncio
@@ -100,7 +99,7 @@ async def test_human_feedback_resume_returns_feedback() -> None:
         pass
 
     # Phase 2: resume with feedback (re-register transients for re-execution)
-    transient_store.register(research_id, id_gen, asyncio.Queue())
+    transient_store.register(research_id, id_gen, asyncio.Queue(), is_resume=True)
 
     resume_data = {"feedback": "看起来不错，继续吧"}
     collected: list[dict] = []
@@ -134,7 +133,7 @@ async def test_human_feedback_applies_modified_outline() -> None:
     async for _ in graph.astream(state, config=config):
         pass
 
-    transient_store.register(research_id, id_gen, asyncio.Queue())
+    transient_store.register(research_id, id_gen, asyncio.Queue(), is_resume=True)
 
     resume_data = {
         "feedback": "修改了大纲",
@@ -152,3 +151,32 @@ async def test_human_feedback_applies_modified_outline() -> None:
             collected.append(output)
 
     assert collected[0]["plan"]["outline"] == ["New Section 1", "New Section 2"]
+
+
+@pytest.mark.asyncio
+async def test_human_feedback_routes_to_searcher_on_search_request() -> None:
+    """Feedback containing '搜索' sets phase to SEARCHING for conditional routing."""
+    saver = InMemorySaver()
+    graph = _build_mini_graph(saver)
+
+    research_id = "test-route-search"
+    id_gen = EventIDGenerator()
+    transient_store.register(research_id, id_gen, asyncio.Queue())
+
+    state = _make_state(research_id)
+    config = {"configurable": {"thread_id": research_id}}
+
+    async for _ in graph.astream(state, config=config):
+        pass
+
+    transient_store.register(research_id, id_gen, asyncio.Queue(), is_resume=True)
+
+    resume_data = {"feedback": "需要补充搜索"}
+    collected = []
+    async for event in graph.astream(Command(resume=resume_data), config=config):
+        if "__interrupt__" in event:
+            continue
+        for _, output in event.items():
+            collected.append(output)
+
+    assert collected[0]["phase"] == ResearchPhase.SEARCHING.value

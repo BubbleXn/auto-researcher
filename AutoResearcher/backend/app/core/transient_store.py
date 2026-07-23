@@ -14,8 +14,18 @@ from app.models.events import EventIDGenerator
 _store: dict[str, dict[str, Any]] = {}
 
 
-def register(research_id: str, id_gen: EventIDGenerator, event_queue: asyncio.Queue) -> None:
-    _store[research_id] = {"id_gen": id_gen, "event_queue": event_queue}
+def register(
+    research_id: str,
+    id_gen: EventIDGenerator,
+    event_queue: asyncio.Queue,
+    *,
+    is_resume: bool = False,
+) -> None:
+    _store[research_id] = {
+        "id_gen": id_gen,
+        "event_queue": event_queue,
+        "is_resume": is_resume,
+    }
 
 
 def get_id_gen(research_id: str) -> EventIDGenerator:
@@ -28,6 +38,11 @@ def get_id_gen(research_id: str) -> EventIDGenerator:
 def get_event_queue(research_id: str) -> asyncio.Queue | None:
     entry = _store.get(research_id)
     return entry["event_queue"] if entry else None
+
+
+def get_is_resume(research_id: str) -> bool:
+    entry = _store.get(research_id)
+    return entry.get("is_resume", False) if entry else False
 
 
 def unregister(research_id: str) -> None:

@@ -123,7 +123,7 @@ async def test_checkpoint_preserves_last_event_id() -> None:
     assert last_eid > 0, "_last_event_id should be positive after planner/searcher/critic"
 
     # Resume
-    transient_store.register(research_id, id_gen, asyncio.Queue())
+    transient_store.register(research_id, id_gen, asyncio.Queue(), is_resume=True)
     async for _ in graph.astream(Command(resume={"feedback": "ok"}), config=config):
         pass
 
