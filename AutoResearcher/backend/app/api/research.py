@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import time
 import uuid
 from typing import Any, AsyncGenerator
@@ -34,6 +35,8 @@ from app.models.events import (
     SSEEventType,
 )
 from app.models.schemas import HumanFeedbackRequest, ResearchRequest
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/research", tags=["research"])
 
@@ -74,12 +77,17 @@ async def _stream_graph_events(
     try:
         async for event in graph.astream(input_or_command, config=config):
             if "__interrupt__" in event:
+                logger.info("Graph interrupted (astream __interrupt__)")
                 continue
             for node_name, node_output in event.items():
                 for sse in node_output.get("_sse_events", []):
                     await event_queue.put(sse)
                 if "sources" in node_output:
                     final_sources = node_output["sources"]
+                logger.debug("Node '%s' completed, %d SSE events", node_name, len(node_output.get("_sse_events", [])))
+    except Exception:
+        logger.exception("Error in _stream_graph_events")
+        raise
     finally:
         await event_queue.put(None)
     return final_sources
@@ -155,9 +163,18 @@ async def _run_research_stream(
                     event_queue: asyncio.Queue[SSEEvent | None] = asyncio.Queue()
                     transient_store.register(research_id, id_gen, event_queue, is_resume=True)
 
-                    feedback_future: asyncio.Future = asyncio.get_event_loop().create_future()
+                    feedback_future: asyncio.Future = asyncio.get_running_loop().create_future()
                     _feedback_futures[research_id] = feedback_future
-                    feedback_data = await feedback_future
+
+                    while True:
+                        try:
+                            feedback_data = await asyncio.wait_for(
+                                asyncio.shield(feedback_future), timeout=15.0,
+                            )
+                            break
+                        except asyncio.TimeoutError:
+                            yield ": heartbeat\n\n"
+
                     _feedback_futures.pop(research_id, None)
 
                     async with semaphore:
@@ -175,9 +192,18 @@ async def _run_research_stream(
                             if not snap.next:
                                 break
 
-                            feedback_future = asyncio.get_event_loop().create_future()
+                            feedback_future = asyncio.get_running_loop().create_future()
                             _feedback_futures[research_id] = feedback_future
-                            feedback_data = await feedback_future
+
+                            while True:
+                                try:
+                                    feedback_data = await asyncio.wait_for(
+                                        asyncio.shield(feedback_future), timeout=15.0,
+                                    )
+                                    break
+                                except asyncio.TimeoutError:
+                                    yield ": heartbeat\n\n"
+
                             _feedback_futures.pop(research_id, None)
 
                             last_eid = snap.values.get("_last_event_id", id_gen.current)
@@ -245,17 +271,29 @@ async def _run_research_stream(
                 if not snapshot.next:
                     break
 
-                # Interrupted — wait for feedback
-                feedback_future = asyncio.get_event_loop().create_future()
+                # Interrupted — wait for feedback with heartbeat to keep SSE alive
+                logger.info("[%s] Graph interrupted, waiting for feedback", research_id)
+                feedback_future: asyncio.Future = asyncio.get_running_loop().create_future()
                 _feedback_futures[research_id] = feedback_future
-                feedback_data = await feedback_future
+
+                while True:
+                    try:
+                        feedback_data = await asyncio.wait_for(
+                            asyncio.shield(feedback_future), timeout=15.0,
+                        )
+                        break
+                    except asyncio.TimeoutError:
+                        yield ": heartbeat\n\n"
+
                 _feedback_futures.pop(research_id, None)
+                logger.info("[%s] Feedback received: %s", research_id, feedback_data.get("feedback", "")[:50])
 
                 last_eid = snapshot.values.get("_last_event_id", id_gen.current)
                 id_gen = EventIDGenerator(start=last_eid)
                 event_queue = asyncio.Queue()
                 input_or_cmd = Command(resume=feedback_data)
                 is_first_run = False
+                logger.info("[%s] Resuming graph execution", research_id)
 
             duration = time.time() - start_time
             yield SSEEvent.create(
@@ -267,6 +305,7 @@ async def _run_research_stream(
                 ),
                 id_gen,
             ).to_sse()
+            logger.info("[%s] Research completed in %.1fs", research_id, duration)
 
     except Exception as e:
         yield SSEEvent.create(
@@ -324,6 +363,7 @@ async def submit_feedback(request: HumanFeedbackRequest) -> dict:
     """
     future = _feedback_futures.get(request.research_id)
     if not future:
+        logger.warning("Feedback for unknown/non-waiting research: %s", request.research_id)
         return {"status": "error", "message": "Research task not found or not awaiting feedback"}
 
     feedback_data = {
@@ -331,6 +371,7 @@ async def submit_feedback(request: HumanFeedbackRequest) -> dict:
         "modified_outline": request.modified_outline,
     }
     future.set_result(feedback_data)
+    logger.info("Feedback delivered for %s: %s", request.research_id, request.feedback[:50])
 
     return {"status": "ok", "research_id": request.research_id}
 

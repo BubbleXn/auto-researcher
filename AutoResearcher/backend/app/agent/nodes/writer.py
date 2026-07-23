@@ -47,7 +47,7 @@ class WriterNode:
             SSEEventType.PHASE_CHANGE,
             PhaseChangePayload(
                 phase=ResearchPhase.WRITING.value,
-                from_phase=ResearchPhase.CRITIQUING.value,
+                from_phase=ResearchPhase.AWAITING_HUMAN_INPUT.value,
                 message="正在综合信息生成研究报告...",
             ),
             id_gen,

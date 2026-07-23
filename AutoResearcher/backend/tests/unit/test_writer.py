@@ -129,7 +129,7 @@ async def test_writer_emits_phase_change_and_step() -> None:
 
     assert len(phase_events) >= 1
     assert phase_events[0].data["phase"] == "writing"
-    assert phase_events[0].data["from_phase"] == "critiquing"
+    assert phase_events[0].data["from_phase"] == "awaiting_human_input"
 
     assert len(step_events) >= 1
     assert step_events[0].data["action"] == "writing_report"
