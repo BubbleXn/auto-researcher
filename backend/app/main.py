@@ -17,6 +17,7 @@ from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
 from app.api.documents import router as documents_router
 from app.api.research import router as research_router
 from app.core.config import settings
+from app.core.report_store import ReportStore
 from app.models.schemas import HealthResponse
 
 logger = logging.getLogger(__name__)
@@ -26,15 +27,26 @@ _HEALTH_CHECK_TIMEOUT_SECONDS = 5.0
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Initialize persistent SQLite checkpointer for LangGraph."""
+    """Initialize persistent SQLite checkpointer and report store."""
     db_path = settings.checkpoint_db_path
     db_dir = os.path.dirname(db_path)
     if db_dir:
         os.makedirs(db_dir, exist_ok=True)
 
+    report_db_path = settings.report_db_path
+    report_db_dir = os.path.dirname(report_db_path)
+    if report_db_dir:
+        os.makedirs(report_db_dir, exist_ok=True)
+
     async with AsyncSqliteSaver.from_conn_string(db_path) as checkpointer:
         app.state.checkpointer = checkpointer
-        yield
+        report_store = ReportStore(report_db_path)
+        await report_store.connect()
+        app.state.report_store = report_store
+        try:
+            yield
+        finally:
+            await report_store.close()
 
 
 def _chromadb_status() -> str:

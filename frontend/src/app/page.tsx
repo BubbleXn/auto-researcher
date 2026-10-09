@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { AppShell } from "@/components/layout/AppShell";
 import { Header } from "@/components/layout/Header";
 import { ChatInput } from "@/components/chat/ChatInput";
@@ -25,7 +26,7 @@ export default function HomePage() {
     reset,
   } = useResearchSession();
 
-  const { connect } = useSSE(SSE_ENDPOINT, {
+  const { connect, disconnect } = useSSE(SSE_ENDPOINT, {
     onEvent: handleSSEEvent,
     onStatusChange: setConnectionStatus,
     researchId: session.researchId,
@@ -66,6 +67,13 @@ export default function HomePage() {
     connect({ query });
   };
 
+  // "新研究" must abort the live SSE stream and clear state — a same-route
+  // navigation alone would silently keep the old session alive.
+  const handleNewResearch = () => {
+    disconnect();
+    reset();
+  };
+
   const handleRetry = () => {
     if (session.query) {
       reset();
@@ -77,7 +85,10 @@ export default function HomePage() {
     session.status === "running" || session.status === "awaiting_input";
 
   return (
-    <AppShell>
+    <AppShell
+      onNewResearch={handleNewResearch}
+      historyRefreshKey={session.reportId}
+    >
       <Header status={session.connectionStatus} />
 
       <div className="flex-1 overflow-y-auto">
@@ -156,7 +167,19 @@ export default function HomePage() {
             )}
 
             {session.reportMarkdown && (
-              <ReportView markdown={session.reportMarkdown} />
+              <>
+                {session.status === "completed" && session.reportId && (
+                  <div className="pt-1">
+                    <Link
+                      href={`/report/${session.reportId}`}
+                      className="text-xs text-link hover:underline"
+                    >
+                      在报告页查看（可从侧边栏历史记录再次打开）→
+                    </Link>
+                  </div>
+                )}
+                <ReportView markdown={session.reportMarkdown} />
+              </>
             )}
           </div>
         )}

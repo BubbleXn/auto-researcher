@@ -61,3 +61,21 @@ export interface Citation {
   title: string;
   domain: string;
 }
+
+export interface HistoryItem {
+  research_id: string;
+  query: string;
+  total_sources: number;
+  duration_seconds: number;
+  created_at: string;
+}
+
+export interface ReportDetail {
+  research_id: string;
+  query: string;
+  report_markdown: string;
+  sources: Array<{ title?: string; url?: string; [key: string]: unknown }>;
+  total_sources: number;
+  duration_seconds: number;
+  created_at: string;
+}

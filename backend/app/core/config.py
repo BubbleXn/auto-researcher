@@ -24,6 +24,7 @@ class Settings(BaseSettings):
     use_mock: bool = False
 
     checkpoint_db_path: str = "./data/checkpoints.db"
+    report_db_path: str = "./data/reports.db"
 
     max_upload_size_mb: int = 50
 

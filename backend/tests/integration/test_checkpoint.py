@@ -20,7 +20,15 @@ from app.api.research import (
     _run_research_stream,
 )
 from app.core import transient_store
+from app.core.report_store import ReportStore
 from app.models.events import EventIDGenerator
+
+
+@pytest.fixture
+async def report_store(tmp_path):
+    store = ReportStore(str(tmp_path / "reports.db"))
+    await store.connect()
+    return store
 
 
 class _MockLLM:
@@ -208,6 +216,7 @@ async def test_reconnection_missing_checkpoint_sends_error_and_cleans_up(checkpo
         vectorstore=_MockVS(),
         semaphore=semaphore,
         checkpointer=saver,
+        report_store=report_store,
         resume_from_event_id=1,
     ):
         events.append(sse_str)
@@ -253,6 +262,7 @@ async def test_reconnection_resumes_interrupted_session_and_cleans_up(checkpoint
         vectorstore=_MockVS(),
         semaphore=semaphore,
         checkpointer=saver,
+        report_store=report_store,
         resume_from_event_id=1,
     ):
         events.append(sse_str)
@@ -290,6 +300,7 @@ async def test_reconnection_completed_session_sends_resume_state_and_cleans_up(c
         vectorstore=_MockVS(),
         semaphore=semaphore,
         checkpointer=saver,
+        report_store=report_store,
     ):
         pass
 
@@ -306,6 +317,7 @@ async def test_reconnection_completed_session_sends_resume_state_and_cleans_up(c
         vectorstore=_MockVS(),
         semaphore=semaphore,
         checkpointer=saver,
+        report_store=report_store,
         resume_from_event_id=1,
     ):
         events.append(sse_str)
@@ -359,6 +371,7 @@ async def test_error_phase_does_not_emit_done(checkpointer) -> None:
         vectorstore=_MockVS(),
         semaphore=semaphore,
         checkpointer=saver,
+        report_store=report_store,
     ):
         events.append(sse_str)
 

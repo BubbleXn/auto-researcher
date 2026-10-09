@@ -5,6 +5,9 @@ export const API_BASE_URL =
 
 export const SSE_ENDPOINT = `${API_BASE_URL}/api/research/start`;
 export const HUMAN_INPUT_ENDPOINT = `${API_BASE_URL}/api/research/feedback`;
+export const HISTORY_ENDPOINT = `${API_BASE_URL}/api/research/history`;
+export const reportDetailUrl = (researchId: string) =>
+  `${API_BASE_URL}/api/research/history/${researchId}/report`;
 
 export const PHASE_LABELS: Record<ResearchPhase, string> = {
   planning: "规划研究方案",

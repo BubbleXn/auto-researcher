@@ -30,6 +30,30 @@ class ResearchStatusResponse(BaseModel):
     error: str | None = None
 
 
+class HistoryItem(BaseModel):
+    """Summary entry for the sidebar history list (no report body)."""
+
+    research_id: str
+    query: str
+    total_sources: int
+    duration_seconds: float
+    created_at: str
+
+
+class HistoryResponse(BaseModel):
+    items: list[HistoryItem]
+
+
+class ReportDetailResponse(BaseModel):
+    research_id: str
+    query: str
+    report_markdown: str
+    sources: list[dict]
+    total_sources: int
+    duration_seconds: float
+    created_at: str
+
+
 class HealthResponse(BaseModel):
     status: str
     version: str

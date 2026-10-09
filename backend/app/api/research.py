@@ -8,7 +8,7 @@ import time
 import uuid
 from typing import Any, AsyncGenerator
 
-from fastapi import APIRouter, Depends, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
 from langgraph.types import Command
 
@@ -18,10 +18,12 @@ from app.agent.state import ResearchPhase, create_initial_state
 from app.core import transient_store
 from app.core.dependencies import (
     get_llm_client,
+    get_report_store,
     get_search_client,
     get_semaphore,
     get_vectorstore_client,
 )
+from app.core.report_store import ReportStore
 from app.models.events import (
     CompletedStep,
     DonePayload,
@@ -35,7 +37,13 @@ from app.models.events import (
     SSEEvent,
     SSEEventType,
 )
-from app.models.schemas import HumanFeedbackRequest, ResearchRequest
+from app.models.schemas import (
+    HistoryItem,
+    HistoryResponse,
+    HumanFeedbackRequest,
+    ReportDetailResponse,
+    ResearchRequest,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -133,6 +141,7 @@ async def _run_research_stream(
     vectorstore: VectorStoreClient,
     semaphore: asyncio.Semaphore,
     checkpointer: Any,
+    report_store: ReportStore,
     resume_from_event_id: int | None = None,
 ) -> AsyncGenerator[str, None]:
     """Execute the research graph and yield SSE events.
@@ -326,6 +335,21 @@ async def _run_research_stream(
             return
 
         duration = time.time() - start_time
+
+        # Persist the finished report so the sidebar history and the report
+        # page can re-render it later. A storage failure must not break the
+        # stream — the client already has the full report.
+        try:
+            await report_store.save_report(
+                research_id=research_id,
+                query=str((final_state.values or {}).get("query", query)),
+                report_markdown=str((final_state.values or {}).get("report", "")),
+                sources=final_sources,
+                duration_seconds=duration,
+            )
+        except Exception:
+            logger.exception("[%s] Failed to persist report; stream continues", research_id)
+
         yield SSEEvent.create(
             SSEEventType.DONE,
             DonePayload(
@@ -362,6 +386,7 @@ async def start_research(
     search: SearchClient = Depends(get_search_client),
     vectorstore: VectorStoreClient = Depends(get_vectorstore_client),
     semaphore: asyncio.Semaphore = Depends(get_semaphore),
+    report_store: ReportStore = Depends(get_report_store),
 ) -> StreamingResponse:
     """Start a research task and stream SSE events."""
     checkpointer = request.app.state.checkpointer
@@ -376,6 +401,7 @@ async def start_research(
             vectorstore=vectorstore,
             semaphore=semaphore,
             checkpointer=checkpointer,
+            report_store=report_store,
             resume_from_event_id=body.resume_from_event_id,
         ),
         media_type="text/event-stream",
@@ -422,3 +448,29 @@ async def get_status(research_id: str) -> dict:
     if research_id not in _active_research:
         return {"status": "not_found"}
     return {"status": "active", **_active_research[research_id]}
+
+
+@router.get("/history", response_model=HistoryResponse)
+async def list_history(
+    limit: int = Query(50, ge=1, le=200),
+    offset: int = Query(0, ge=0),
+    store: ReportStore = Depends(get_report_store),
+) -> HistoryResponse:
+    """List finished research reports, newest first (sidebar history)."""
+    items = await store.list_reports(limit=limit, offset=offset)
+    return HistoryResponse(items=[HistoryItem(**item) for item in items])
+
+
+@router.get(
+    "/history/{research_id}/report",
+    response_model=ReportDetailResponse,
+)
+async def get_report_detail(
+    research_id: str,
+    store: ReportStore = Depends(get_report_store),
+) -> ReportDetailResponse:
+    """Fetch one finished report for rendering on the report page."""
+    detail = await store.get_report(research_id)
+    if detail is None:
+        raise HTTPException(status_code=404, detail="Report not found")
+    return ReportDetailResponse(**detail)

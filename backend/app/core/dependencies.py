@@ -7,8 +7,11 @@ import logging
 from functools import lru_cache
 from typing import Any
 
+from fastapi import Request
+
 from app.agent.clients.protocols import LLMClient, SearchClient, VectorStoreClient
 from app.core.config import settings
+from app.core.report_store import ReportStore
 
 logger = logging.getLogger(__name__)
 
@@ -31,6 +34,11 @@ def get_semaphore() -> asyncio.Semaphore:
     if _semaphore is None:
         _semaphore = asyncio.Semaphore(settings.max_concurrent_research)
     return _semaphore
+
+
+def get_report_store(request: Request) -> ReportStore:
+    """Return the app-wide report store initialized in the lifespan."""
+    return request.app.state.report_store
 
 
 @lru_cache
