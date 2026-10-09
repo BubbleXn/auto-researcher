@@ -11,7 +11,7 @@ from typing import Any
 
 from langgraph.types import interrupt
 
-from app.agent.state import ResearchPhase
+from app.agent.state import ResearchPhase, SubTask
 from app.core import transient_store
 from app.models.events import (
     HumanInputNeededPayload,
@@ -64,6 +64,11 @@ class HumanFeedbackNode:
             "outline": outline_payload,
         })
 
+        # The resume replay ends here: any later pause in this session is a
+        # fresh pause and must re-emit its input prompt, otherwise the client
+        # would never see a feedback panel again after the first resume.
+        transient_store.set_is_resume(research_id, False)
+
         action: str | None = None
         modified_outline = None
         if isinstance(feedback_data, dict):
@@ -87,7 +92,7 @@ class HumanFeedbackNode:
         else:
             next_phase = ResearchPhase.WRITING.value
 
-        return {
+        result: dict[str, Any] = {
             "phase": next_phase,
             "human_input_requested": False,
             "human_feedback": feedback or None,
@@ -95,3 +100,32 @@ class HumanFeedbackNode:
             "_sse_events": [],
             "_last_event_id": id_gen.current,
         }
+
+        if next_phase == ResearchPhase.SEARCHING.value:
+            # Seed fresh pending sub-tasks; otherwise SearcherNode finds only
+            # completed tasks and spins a round without searching anything.
+            sub_tasks = [dict(t) for t in state.get("sub_tasks", [])]
+            existing = {str(t.get("query", "")).lower().strip() for t in sub_tasks}
+            critique = state.get("critique") or {}
+            raw_aspects = critique.get("missing_aspects", [])
+            aspects = [
+                a.strip()
+                for a in (raw_aspects if isinstance(raw_aspects, list) else [])
+                if isinstance(a, str) and a.strip()
+            ][:3]
+            if not aspects and feedback.strip():
+                # No critique hints available — search for the user's own words.
+                aspects = [feedback.strip()]
+            extra = 0
+            for aspect in aspects:
+                key = aspect.lower()
+                if key in existing:
+                    continue
+                extra += 1
+                sub_tasks.append(
+                    SubTask(id=f"extra_{extra}", query=aspect, status="pending", result=None)
+                )
+                existing.add(key)
+            result["sub_tasks"] = sub_tasks
+
+        return result

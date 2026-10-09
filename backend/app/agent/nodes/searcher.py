@@ -45,14 +45,17 @@ class SearcherNode:
 
         critique = state.get("critique")
         if critique and retry_count > 0:
-            # Same filtering rules as CriticNode: cap at 3 aspects and skip
-            # ones duplicating an existing query.
+            # Same filtering rules as CriticNode: cap at 3 valid aspects
+            # (filter first, then cap) and skip ones duplicating an existing
+            # query.
             existing_queries = {t["query"].lower().strip() for t in sub_tasks}
+            raw_aspects = critique.get("missing_aspects", [])
             new_aspects = [
                 aspect
-                for aspect in critique.get("missing_aspects", [])[:3]
-                if isinstance(aspect, str) and aspect.lower().strip() not in existing_queries
-            ]
+                for aspect in (raw_aspects if isinstance(raw_aspects, list) else [])
+                if isinstance(aspect, str)
+                and aspect.lower().strip() not in existing_queries
+            ][:3]
             for i, aspect in enumerate(new_aspects):
                 new_task_id = f"retry_{retry_count}_task_{i}"
                 if not any(t["id"] == new_task_id for t in sub_tasks):

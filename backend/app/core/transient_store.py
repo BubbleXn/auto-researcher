@@ -45,5 +45,12 @@ def get_is_resume(research_id: str) -> bool:
     return entry.get("is_resume", False) if entry else False
 
 
+def set_is_resume(research_id: str, value: bool) -> None:
+    """Flip the resume flag, e.g. after the interrupted node's replay ends."""
+    entry = _store.get(research_id)
+    if entry:
+        entry["is_resume"] = value
+
+
 def unregister(research_id: str) -> None:
     _store.pop(research_id, None)
