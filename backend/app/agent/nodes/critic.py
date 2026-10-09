@@ -5,6 +5,7 @@ and assigns a confidence score. Can trigger retry loops back to Searcher.
 
 from __future__ import annotations
 
+import asyncio
 from typing import Any
 
 from app.agent.clients.protocols import LLMClient
@@ -14,6 +15,7 @@ from app.models.events import (
     AgentStepPayload,
     ErrorPayload,
     PhaseChangePayload,
+    ProgressPayload,
     SSEEvent,
     SSEEventType,
     make_step_id,
@@ -84,9 +86,40 @@ class CriticNode:
             },
         ]
 
-        result = await self._llm.generate_structured(
-            messages, schema={"type": "object"}
+        sse_events.append(
+            SSEEvent.create(
+                SSEEventType.PROGRESS,
+                ProgressPayload(
+                    current=1,
+                    total=3,
+                    detail="正在评估信息一致性和完整性...",
+                ),
+                id_gen,
+            )
         )
+
+        try:
+            result = await asyncio.wait_for(
+                self._llm.generate_structured(messages, schema={"type": "object"}),
+                timeout=30.0,
+            )
+        except asyncio.TimeoutError:
+            # The node is about to abort, so _sse_events would be discarded —
+            # push the error straight onto the event queue instead.
+            event_queue = transient_store.get_event_queue(state["research_id"])
+            if event_queue:
+                await event_queue.put(
+                    SSEEvent.create(
+                        SSEEventType.ERROR,
+                        ErrorPayload(
+                            error_code="CRITIC_TIMEOUT",
+                            message="审核节点响应超时，请稍后重试",
+                            recoverable=True,
+                        ),
+                        id_gen,
+                    )
+                )
+            raise
 
         critique: CritiqueResult = CritiqueResult(
             has_conflicts=result.get("has_conflicts", False),

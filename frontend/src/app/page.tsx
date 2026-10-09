@@ -11,6 +11,7 @@ import { Spinner } from "@/components/shared/Spinner";
 import { useResearchSession } from "@/hooks/useResearchSession";
 import { useSSE } from "@/hooks/useSSE";
 import { SSE_ENDPOINT, HUMAN_INPUT_ENDPOINT } from "@/lib/constants";
+import type { PendingInput } from "@/types/research";
 
 export default function HomePage() {
   const {
@@ -19,6 +20,7 @@ export default function HomePage() {
     handleSSEEvent,
     submitInput,
     skipInput,
+    restoreInput,
     setConnectionStatus,
     reset,
   } = useResearchSession();
@@ -28,6 +30,36 @@ export default function HomePage() {
     onStatusChange: setConnectionStatus,
     researchId: session.researchId,
   });
+
+  // Deliver feedback and verify the backend actually accepted it: on
+  // failure, restore the prompt so the user can retry instead of
+  // silently deadlocking the paused session.
+  const sendFeedback = async (
+    input: PendingInput,
+    feedback: string,
+    action?: string
+  ) => {
+    try {
+      const res = await fetch(HUMAN_INPUT_ENDPOINT, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          research_id: session.researchId,
+          input_id: input.inputId,
+          feedback,
+          action,
+        }),
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const data = (await res.json()) as { status?: string; message?: string };
+      if (data.status !== "ok") {
+        throw new Error(data.message ?? "feedback rejected");
+      }
+    } catch (err) {
+      console.error("Failed to deliver feedback:", err);
+      restoreInput(input);
+    }
+  };
 
   const handleSubmit = (query: string) => {
     startResearch(query);
@@ -108,31 +140,17 @@ export default function HomePage() {
                 prompt={session.pendingInput.prompt}
                 options={session.pendingInput.options}
                 outline={session.pendingInput.outline}
-                onSubmit={(response) => {
-                  const inputId = session.pendingInput!.inputId;
-                  submitInput(inputId, response);
-                  fetch(HUMAN_INPUT_ENDPOINT, {
-                    method: "POST",
-                    headers: { "Content-Type": "application/json" },
-                    body: JSON.stringify({
-                      research_id: session.researchId,
-                      input_id: inputId,
-                      feedback: response,
-                    }),
-                  }).catch(console.error);
+                onSubmit={(response, action) => {
+                  const current = session.pendingInput;
+                  if (!current) return;
+                  submitInput(current.inputId, response);
+                  void sendFeedback(current, response, action);
                 }}
                 onSkip={() => {
-                  const inputId = session.pendingInput!.inputId;
-                  skipInput(inputId);
-                  fetch(HUMAN_INPUT_ENDPOINT, {
-                    method: "POST",
-                    headers: { "Content-Type": "application/json" },
-                    body: JSON.stringify({
-                      research_id: session.researchId,
-                      input_id: inputId,
-                      feedback: "",
-                    }),
-                  }).catch(console.error);
+                  const current = session.pendingInput;
+                  if (!current) return;
+                  skipInput(current.inputId);
+                  void sendFeedback(current, "");
                 }}
               />
             )}

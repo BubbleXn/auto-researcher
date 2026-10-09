@@ -1,4 +1,11 @@
-export type ResearchPhase = "planning" | "searching" | "critiquing" | "awaiting_human_input" | "writing";
+export type ResearchPhase =
+  | "planning"
+  | "searching"
+  | "critiquing"
+  | "awaiting_human_input"
+  | "writing"
+  | "completed"
+  | "error";
 
 export type SSEEventType =
   | "research_start"
@@ -8,7 +15,13 @@ export type SSEEventType =
   | "human_input_needed"
   | "report_chunk"
   | "error"
-  | "done";
+  | "done"
+  | "resume_state";
+
+export interface InputOption {
+  label: string;
+  action?: string;
+}
 
 interface SSEEventBase {
   event_id?: string | number;
@@ -52,7 +65,7 @@ export interface HumanInputNeededEvent extends SSEEventBase {
   phase?: ResearchPhase;
   prompt: string;
   input_id: string;
-  options?: string[];
+  options?: InputOption[];
   outline?: Array<{ section: string; key_points?: string[] }>;
   editable_fields?: string[];
 }
@@ -81,6 +94,31 @@ export interface DoneEvent extends SSEEventBase {
   timestamp: string;
 }
 
+export interface CompletedStep {
+  step_id: string;
+  action: string;
+  detail: string;
+}
+
+export interface PendingSubTask {
+  id: string;
+  query: string;
+  status: string;
+}
+
+export interface ResumeStateEvent extends SSEEventBase {
+  type: "resume_state";
+  research_id: string;
+  resumed: boolean;
+  phase: string;
+  retry_count: number;
+  max_retries: number;
+  completed_steps: CompletedStep[];
+  pending_sub_tasks: PendingSubTask[];
+  report_so_far: string;
+  timestamp: string;
+}
+
 export type SSEEvent =
   | ResearchStartEvent
   | PhaseChangeEvent
@@ -89,4 +127,5 @@ export type SSEEvent =
   | HumanInputNeededEvent
   | ReportChunkEvent
   | SSEErrorEvent
-  | DoneEvent;
+  | DoneEvent
+  | ResumeStateEvent;

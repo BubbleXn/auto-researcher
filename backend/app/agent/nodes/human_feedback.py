@@ -64,8 +64,14 @@ class HumanFeedbackNode:
             "outline": outline_payload,
         })
 
-        feedback = feedback_data.get("feedback", "") if isinstance(feedback_data, dict) else str(feedback_data)
-        modified_outline = feedback_data.get("modified_outline") if isinstance(feedback_data, dict) else None
+        action: str | None = None
+        modified_outline = None
+        if isinstance(feedback_data, dict):
+            feedback = str(feedback_data.get("feedback") or "")
+            modified_outline = feedback_data.get("modified_outline")
+            action = feedback_data.get("action")
+        else:
+            feedback = "" if feedback_data is None else str(feedback_data)
 
         updated_plan = dict(state.get("plan", {}))
         if modified_outline:
@@ -74,8 +80,9 @@ class HumanFeedbackNode:
                 for item in modified_outline
             ]
 
-        # Route based on feedback: "补充搜索" → back to searcher
-        if "搜索" in (feedback or ""):
+        # Route on the explicit structured action first; fall back to a
+        # keyword check for free-form text submitted without an action.
+        if action == "more_search" or (action is None and "搜索" in feedback):
             next_phase = ResearchPhase.SEARCHING.value
         else:
             next_phase = ResearchPhase.WRITING.value

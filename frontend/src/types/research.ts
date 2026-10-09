@@ -1,4 +1,6 @@
-import type { ResearchPhase } from "./sse-events";
+import type { InputOption, ResearchPhase } from "./sse-events";
+
+export type { InputOption };
 
 export type ConnectionStatus =
   | "idle"
@@ -29,6 +31,13 @@ export interface PhaseState {
   completedAt: string | null;
 }
 
+export interface PendingInput {
+  inputId: string;
+  prompt: string;
+  options?: InputOption[];
+  outline?: Array<{ section: string; key_points?: string[] }>;
+}
+
 export interface ResearchSession {
   researchId: string | null;
   query: string;
@@ -43,12 +52,7 @@ export interface ResearchSession {
     message: string;
     recoverable: boolean;
   } | null;
-  pendingInput: {
-    inputId: string;
-    prompt: string;
-    options?: string[];
-    outline?: Array<{ section: string; key_points?: string[] }>;
-  } | null;
+  pendingInput: PendingInput | null;
 }
 
 export interface Citation {

@@ -8,7 +8,6 @@ import {
   RefreshCw,
   PenLine,
 } from "lucide-react";
-import { cn } from "@/lib/cn";
 
 const ACTION_ICONS: Record<string, React.ReactNode> = {
   plan_created: <ListChecks className="w-3.5 h-3.5 text-phase-planning" />,

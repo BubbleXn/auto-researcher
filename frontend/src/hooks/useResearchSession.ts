@@ -1,7 +1,7 @@
 "use client";
 
 import { useReducer, useCallback } from "react";
-import type { ResearchSession, PhaseState } from "@/types/research";
+import type { PendingInput, ResearchSession, PhaseState } from "@/types/research";
 import type { SSEEvent, ResearchPhase } from "@/types/sse-events";
 
 type SessionAction =
@@ -10,7 +10,8 @@ type SessionAction =
   | { type: "SUBMIT_INPUT"; inputId: string; response: string }
   | { type: "SKIP_INPUT"; inputId: string }
   | { type: "CONNECTION_STATUS"; status: ResearchSession["connectionStatus"] }
-  | { type: "RESET" };
+  | { type: "RESET" }
+  | { type: "RESTORE_INPUT"; input: PendingInput };
 
 const INITIAL_STATE: ResearchSession = {
   researchId: null,
@@ -54,6 +55,14 @@ function sessionReducer(
 
     case "RESET":
       return INITIAL_STATE;
+
+    case "RESTORE_INPUT":
+      // Feedback delivery failed: put the prompt back so the user can retry.
+      return {
+        ...state,
+        status: "awaiting_input",
+        pendingInput: action.input,
+      };
 
     case "SSE_EVENT":
       return handleSSEEvent(state, action.event);
@@ -177,6 +186,31 @@ function handleSSEEvent(
         ),
         currentPhase: null,
       };
+
+    case "resume_state": {
+      // Reconnection snapshot: restore whatever the UI can derive from it.
+      // A missing arm here would make the reducer return undefined and
+      // crash React state on every reconnect.
+      const status: ResearchSession["status"] =
+        event.phase === "awaiting_human_input"
+          ? "awaiting_input"
+          : event.phase === "completed"
+            ? "completed"
+            : event.phase === "error"
+              ? "error"
+              : "running";
+      return {
+        ...state,
+        connectionStatus: "connected",
+        status,
+        currentPhase: state.currentPhase ?? (event.phase as ResearchPhase),
+        reportMarkdown: state.reportMarkdown || event.report_so_far || "",
+      };
+    }
+
+    default:
+      // Unknown event types (older/newer backend) must not corrupt state.
+      return state;
   }
 }
 
@@ -199,6 +233,10 @@ export function useResearchSession() {
     dispatch({ type: "SKIP_INPUT", inputId });
   }, []);
 
+  const restoreInput = useCallback((input: PendingInput) => {
+    dispatch({ type: "RESTORE_INPUT", input });
+  }, []);
+
   const setConnectionStatus = useCallback(
     (status: ResearchSession["connectionStatus"]) => {
       dispatch({ type: "CONNECTION_STATUS", status });
@@ -216,6 +254,7 @@ export function useResearchSession() {
     handleSSEEvent,
     submitInput,
     skipInput,
+    restoreInput,
     setConnectionStatus,
     reset,
   };

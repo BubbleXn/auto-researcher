@@ -3,6 +3,7 @@
 import { useState } from "react";
 import { MessageSquare, SkipForward, ArrowUp, ListChecks } from "lucide-react";
 import { cn } from "@/lib/cn";
+import type { InputOption } from "@/types/research";
 
 interface OutlineItem {
   section: string;
@@ -11,13 +12,17 @@ interface OutlineItem {
 
 interface HumanInputPromptProps {
   prompt: string;
-  options?: string[];
+  options?: InputOption[];
   outline?: OutlineItem[];
-  onSubmit: (response: string) => void;
+  onSubmit: (response: string, action?: string) => void;
   onSkip: () => void;
 }
 
-const DEFAULT_OPTIONS = ["继续生成报告", "需要补充搜索", "调整大纲后继续"];
+const DEFAULT_OPTIONS: InputOption[] = [
+  { label: "继续生成报告", action: "proceed" },
+  { label: "需要补充搜索", action: "more_search" },
+  { label: "调整大纲后继续" },
+];
 
 export function HumanInputPrompt({
   prompt,
@@ -69,11 +74,14 @@ export function HumanInputPrompt({
       <div className="flex flex-wrap gap-2 mb-3 pl-6">
         {displayOptions.map((opt) => (
           <button
-            key={opt}
-            onClick={() => onSubmit(opt)}
-            className="px-3 py-1.5 text-sm rounded-full bg-surface-700 text-text-secondary hover:text-text-primary hover:bg-surface-600 border border-surface-500/40 transition-colors"
+            key={opt.label}
+            onClick={() => onSubmit(opt.label, opt.action)}
+            className={cn(
+              "px-3 py-1.5 text-sm rounded-full bg-surface-700 text-text-secondary",
+              "hover:text-text-primary hover:bg-surface-600 border border-surface-500/40 transition-colors"
+            )}
           >
-            {opt}
+            {opt.label}
           </button>
         ))}
       </div>

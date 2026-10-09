@@ -5,6 +5,7 @@ Uses streaming LLM output to push report_chunk events in real-time via asyncio.Q
 
 from __future__ import annotations
 
+import asyncio
 from typing import Any
 
 from app.agent.clients.protocols import LLMClient, VectorStoreClient
@@ -60,9 +61,14 @@ class WriterNode:
         extra_context = ""
         if self._vectorstore:
             try:
-                vs_results = await self._vectorstore.query(
-                    query_text=state["query"],
-                    n_results=10,
+                # Use a short timeout so a slow/unready ChromaDB embedding model
+                # does not block report generation for the user.
+                vs_results = await asyncio.wait_for(
+                    self._vectorstore.query(
+                        query_text=state["query"],
+                        n_results=10,
+                    ),
+                    timeout=3.0,
                 )
                 if vs_results:
                     extra_parts = []
@@ -70,6 +76,8 @@ class WriterNode:
                         source = r.get("metadata", {}).get("source_filename", "database")
                         extra_parts.append(f"[{source}] {r.get('document', '')[:500]}")
                     extra_context = "\n---\n".join(extra_parts)
+            except asyncio.TimeoutError:
+                pass
             except Exception:
                 pass
 
@@ -141,7 +149,9 @@ class WriterNode:
             if event_queue:
                 await event_queue.put(final_event)
             report_parts.append(chunk_text)
-        elif report_parts:
+        else:
+            # Always emit a terminating chunk — even for an empty stream —
+            # so the client can finalize the report area.
             done_event = SSEEvent.create(
                 SSEEventType.REPORT_CHUNK,
                 ReportChunkPayload(

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import os
 import re
 
@@ -14,6 +15,8 @@ from app.models.schemas import DocumentUploadResponse
 from app.services.pdf_parser import PDFParser
 
 router = APIRouter(prefix="/api/documents", tags=["documents"])
+
+logger = logging.getLogger(__name__)
 
 _pdf_parser = PDFParser()
 
@@ -44,18 +47,27 @@ async def upload_document(
 
     filename = _sanitize_filename(file.filename)
 
-    pdf_bytes = await file.read()
-    if len(pdf_bytes) == 0:
+    # Read in chunks and enforce the size limit incrementally so an oversized
+    # upload cannot exhaust memory before validation gets a chance to run.
+    pdf_bytes = bytearray()
+    while chunk := await file.read(1024 * 1024):
+        pdf_bytes.extend(chunk)
+        if len(pdf_bytes) > _MAX_UPLOAD_SIZE_BYTES:
+            raise HTTPException(
+                status_code=413,
+                detail=f"File exceeds maximum upload size of {settings.max_upload_size_mb} MB",
+            )
+    pdf_bytes = bytes(pdf_bytes)
+    if not pdf_bytes:
         raise HTTPException(status_code=400, detail="Empty file")
-    if len(pdf_bytes) > _MAX_UPLOAD_SIZE_BYTES:
-        raise HTTPException(
-            status_code=413,
-            detail=f"File exceeds maximum upload size of {settings.max_upload_size_mb} MB",
-        )
     if not _is_valid_pdf_header(pdf_bytes):
         raise HTTPException(status_code=400, detail="Invalid PDF file header")
 
-    chunks = await asyncio.to_thread(_pdf_parser.parse, pdf_bytes, filename)
+    try:
+        chunks = await asyncio.to_thread(_pdf_parser.parse, pdf_bytes, filename)
+    except Exception:
+        logger.warning("Failed to parse uploaded PDF: %s", filename, exc_info=True)
+        raise HTTPException(status_code=422, detail="Failed to parse PDF file")
     if not chunks:
         raise HTTPException(status_code=422, detail="No text content found in PDF")
 

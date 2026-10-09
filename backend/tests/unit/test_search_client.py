@@ -6,7 +6,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from app.agent.clients.search import TavilySearchClient
+from app.agent.clients.search import _DEFAULT_MAX_RETRIES, TavilySearchClient
 
 
 @pytest.fixture
@@ -42,7 +42,7 @@ async def test_search_raises_after_max_retries(mock_tavily, no_retry_delay):
     with pytest.raises(ConnectionError):
         await client.search("query")
 
-    assert mock_tavily.search.await_count == 3
+    assert mock_tavily.search.await_count == _DEFAULT_MAX_RETRIES
 
 
 @pytest.mark.asyncio

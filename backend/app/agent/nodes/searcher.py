@@ -4,6 +4,8 @@ Searcher node — executes sub-tasks by searching the web via the SearchClient.
 
 from __future__ import annotations
 
+import asyncio
+import logging
 from typing import Any
 
 from app.agent.clients.protocols import SearchClient, VectorStoreClient
@@ -17,6 +19,8 @@ from app.models.events import (
     SSEEventType,
     make_step_id,
 )
+
+logger = logging.getLogger(__name__)
 
 
 class SearcherNode:
@@ -41,8 +45,15 @@ class SearcherNode:
 
         critique = state.get("critique")
         if critique and retry_count > 0:
-            missing_aspects = critique.get("missing_aspects", [])
-            for i, aspect in enumerate(missing_aspects):
+            # Same filtering rules as CriticNode: cap at 3 aspects and skip
+            # ones duplicating an existing query.
+            existing_queries = {t["query"].lower().strip() for t in sub_tasks}
+            new_aspects = [
+                aspect
+                for aspect in critique.get("missing_aspects", [])[:3]
+                if isinstance(aspect, str) and aspect.lower().strip() not in existing_queries
+            ]
+            for i, aspect in enumerate(new_aspects):
                 new_task_id = f"retry_{retry_count}_task_{i}"
                 if not any(t["id"] == new_task_id for t in sub_tasks):
                     new_task = SubTask(
@@ -114,16 +125,25 @@ class SearcherNode:
             )
 
         if self._vectorstore and all_results:
-            new_results = [r for r in all_results if r not in list(state.get("search_results", []))]
+            previous_results = list(state.get("search_results", []))
+            new_results = [r for r in all_results if r not in previous_results]
             if new_results:
-                try:
-                    await self._vectorstore.add_documents(
+                # Run vector store indexing in the background so it never blocks
+                # the SSE stream while ChromaDB downloads its embedding model.
+                vs_task = asyncio.create_task(
+                    self._vectorstore.add_documents(
                         documents=[r["content"] for r in new_results],
                         metadatas=[{"title": r["title"], "url": r["url"], "sub_task_id": r["sub_task_id"]} for r in new_results],
                         ids=[f"search_{state.get('research_id', 'unknown')}_{r['url']}" for r in new_results],
                     )
-                except Exception:
-                    pass
+                )
+
+                def _log_index_failure(done: asyncio.Task) -> None:
+                    exc = done.exception()
+                    if exc is not None:
+                        logger.warning("Background vector store indexing failed: %s", exc)
+
+                vs_task.add_done_callback(_log_index_failure)
 
         return {
             "phase": ResearchPhase.CRITIQUING.value,

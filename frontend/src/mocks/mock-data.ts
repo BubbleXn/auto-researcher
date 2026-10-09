@@ -192,7 +192,12 @@ export function createPreFeedbackEvents(): Array<{
         prompt:
           "已收集到 12 条相关信息。是否需要针对某个方向深入研究？可选择以下方向或自行指定：",
         input_id: "input-001",
-        options: ["深入模型对比", "关注安全性", "聚焦实际应用案例", "当前信息足够"],
+        options: [
+          { label: "深入模型对比" },
+          { label: "关注安全性" },
+          { label: "聚焦实际应用案例" },
+          { label: "当前信息足够" },
+        ],
       },
     },
   ];

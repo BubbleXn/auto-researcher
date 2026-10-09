@@ -27,7 +27,9 @@ from app.models.events import (
     DonePayload,
     ErrorPayload,
     EventIDGenerator,
+    HumanInputNeededPayload,
     PendingSubTask,
+    PhaseChangePayload,
     ResearchStartPayload,
     ResumeStatePayload,
     SSEEvent,
@@ -103,6 +105,12 @@ async def _drain_queue(event_queue: asyncio.Queue) -> AsyncGenerator[str, None]:
 
 async def _wait_for_feedback(research_id: str, timeout: float = 15.0) -> AsyncGenerator[dict[str, Any] | None, None]:
     """Wait for human feedback, yielding None on heartbeat intervals."""
+    existing = _feedback_futures.get(research_id)
+    if existing is not None and not existing.done():
+        logger.warning(
+            "[%s] Overwriting an active feedback future (duplicate connection?)",
+            research_id,
+        )
     feedback_future: asyncio.Future = asyncio.get_running_loop().create_future()
     _feedback_futures[research_id] = feedback_future
     try:
@@ -157,7 +165,7 @@ async def _run_research_stream(
                         message="No checkpoint found for reconnection",
                         recoverable=False,
                     ),
-                    EventIDGenerator(),
+                    EventIDGenerator(start=resume_from_event_id or 0),
                 ).to_sse()
                 return
 
@@ -196,12 +204,58 @@ async def _run_research_stream(
                 # Session already completed; nothing to resume.
                 return
 
+            if tuple(snapshot.next) != ("human_feedback",):
+                # The graph is parked somewhere that does not accept
+                # Command(resume=...) — e.g. a node crashed mid-run. Waiting
+                # for feedback here would deadlock the stream forever.
+                logger.warning(
+                    "[%s] Reconnect at unexpected position %s; aborting resume",
+                    research_id,
+                    tuple(snapshot.next),
+                )
+                yield SSEEvent.create(
+                    SSEEventType.ERROR,
+                    ErrorPayload(
+                        error_code="RESUME_NOT_SUPPORTED",
+                        message="会话不在可恢复的暂停点，请重新发起研究",
+                        recoverable=False,
+                    ),
+                    id_gen,
+                ).to_sse()
+                return
+
             event_queue = asyncio.Queue()
             transient_store.register(research_id, id_gen, event_queue, is_resume=True)
             _active_research[research_id] = {
                 "query": state_vals.get("query", ""),
                 "phase": state_vals.get("phase", "unknown"),
             }
+
+            # Replay the input prompt so the reconnecting client can restore
+            # its feedback UI (transient events are not part of checkpoints).
+            outline_payload = [
+                {"section": s, "key_points": []}
+                for s in state_vals.get("plan", {}).get("outline", [])
+            ]
+            yield SSEEvent.create(
+                SSEEventType.PHASE_CHANGE,
+                PhaseChangePayload(
+                    phase=ResearchPhase.AWAITING_HUMAN_INPUT.value,
+                    from_phase=None,
+                    message="等待用户确认研究方案...",
+                ),
+                id_gen,
+            ).to_sse()
+            yield SSEEvent.create(
+                SSEEventType.HUMAN_INPUT_NEEDED,
+                HumanInputNeededPayload(
+                    input_id=f"{research_id}-input-resume",
+                    prompt="请确认以下研究大纲，可以直接修改后提交：",
+                    outline=outline_payload,
+                    editable_fields=["outline"],
+                ),
+                id_gen,
+            ).to_sse()
 
             async for feedback_data in _wait_for_feedback(research_id):
                 if feedback_data is None:
@@ -224,45 +278,64 @@ async def _run_research_stream(
             input_or_cmd = create_initial_state(research_id, query)
 
         # --- Shared execution loop ---
-        async with semaphore:
-            while True:
+        while True:
+            # The semaphore must only cover graph execution: holding it while
+            # waiting indefinitely for human feedback would starve the pool.
+            async with semaphore:
                 task = asyncio.create_task(
                     _stream_graph_events(graph, input_or_cmd, config, event_queue)
                 )
-                async for sse_str in _drain_queue(event_queue):
-                    yield sse_str
-                final_sources = await task
+                try:
+                    async for sse_str in _drain_queue(event_queue):
+                        yield sse_str
+                    final_sources = await task
+                finally:
+                    # If the client disconnects, this generator is closed while
+                    # the graph task is still running — cancel it so it cannot
+                    # outlive the session and keep burning LLM/search quota.
+                    if not task.done():
+                        task.cancel()
 
-                snapshot = await graph.aget_state(config)
-                if not snapshot.next:
-                    break
+            snapshot = await graph.aget_state(config)
+            if not snapshot.next:
+                break
 
-                # Interrupted — wait for feedback with heartbeat to keep SSE alive
-                logger.info("[%s] Graph interrupted, waiting for feedback", research_id)
-                async for feedback_data in _wait_for_feedback(research_id):
-                    if feedback_data is None:
-                        yield ": heartbeat\n\n"
-                        continue
-                    break
-                logger.info("[%s] Feedback received: %s", research_id, feedback_data.get("feedback", "")[:50])
+            # Interrupted — wait for feedback with heartbeat to keep SSE alive
+            logger.info("[%s] Graph interrupted, waiting for feedback", research_id)
+            async for feedback_data in _wait_for_feedback(research_id):
+                if feedback_data is None:
+                    yield ": heartbeat\n\n"
+                    continue
+                break
+            logger.info("[%s] Feedback received: %s", research_id, feedback_data.get("feedback", "")[:50])
 
-                last_eid = snapshot.values.get("_last_event_id", id_gen.current)
-                id_gen = EventIDGenerator(start=last_eid)
-                event_queue = asyncio.Queue()
-                transient_store.register(research_id, id_gen, event_queue, is_resume=True)
-                input_or_cmd = Command(resume=feedback_data)
+            # Events emitted by the interrupted node (e.g. the input prompt)
+            # advanced the transient counter without reaching the checkpoint;
+            # take the max so event ids never go backwards after resume.
+            last_eid = max(id_gen.current, snapshot.values.get("_last_event_id", 0))
+            id_gen = EventIDGenerator(start=last_eid)
+            event_queue = asyncio.Queue()
+            transient_store.register(research_id, id_gen, event_queue, is_resume=True)
+            input_or_cmd = Command(resume=feedback_data)
 
-            duration = time.time() - start_time
-            yield SSEEvent.create(
-                SSEEventType.DONE,
-                DonePayload(
-                    research_id=research_id,
-                    total_sources=len(final_sources),
-                    total_duration_seconds=round(duration, 2),
-                ),
-                id_gen,
-            ).to_sse()
-            logger.info("[%s] Research completed in %.1fs", research_id, duration)
+        # An error-phase END (e.g. MAX_RETRIES_EXCEEDED already emitted an
+        # error event) must not masquerade as success with a done event.
+        final_state = await graph.aget_state(config)
+        if (final_state.values or {}).get("phase") == ResearchPhase.ERROR.value:
+            logger.warning("[%s] Ended in error phase; skipping done event", research_id)
+            return
+
+        duration = time.time() - start_time
+        yield SSEEvent.create(
+            SSEEventType.DONE,
+            DonePayload(
+                research_id=research_id,
+                total_sources=len(final_sources),
+                total_duration_seconds=round(duration, 2),
+            ),
+            id_gen,
+        ).to_sse()
+        logger.info("[%s] Research completed in %.1fs", research_id, duration)
 
     except Exception as e:
         logger.exception("Research stream failed for %s", research_id)
@@ -326,9 +399,16 @@ async def submit_feedback(request: HumanFeedbackRequest) -> dict:
         logger.warning("Feedback for unknown/non-waiting research: %s", request.research_id)
         return {"status": "error", "message": "Research task not found or not awaiting feedback"}
 
+    if future.done():
+        # Idempotent handling for duplicate submissions (e.g. double click):
+        # calling set_result twice would raise InvalidStateError as a 500.
+        logger.info("Duplicate feedback for %s ignored", request.research_id)
+        return {"status": "ok", "research_id": request.research_id, "duplicate": True}
+
     feedback_data = {
         "feedback": request.feedback,
         "modified_outline": request.modified_outline,
+        "action": request.action,
     }
     future.set_result(feedback_data)
     logger.info("Feedback delivered for %s: %s", request.research_id, request.feedback[:50])

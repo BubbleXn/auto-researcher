@@ -15,8 +15,10 @@ from tenacity import (
 
 from app.core.config import settings
 
-_DEFAULT_TIMEOUT_SECONDS = 30.0
-_DEFAULT_MAX_RETRIES = 3
+# Timeout × retries bounds a single search at ~40s worst case, so a slow
+# Tavily API cannot stall the SSE stream without a heartbeat for minutes.
+_DEFAULT_TIMEOUT_SECONDS = 15.0
+_DEFAULT_MAX_RETRIES = 2
 
 
 class TavilySearchClient:

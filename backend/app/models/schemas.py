@@ -16,6 +16,11 @@ class HumanFeedbackRequest(BaseModel):
     feedback: str
     modified_outline: list[dict] | None = None
     input_id: str | None = None
+    action: str | None = Field(
+        None,
+        description="Structured routing hint: 'proceed' or 'more_search'. "
+        "When absent, routing falls back to keyword matching on feedback text.",
+    )
 
 
 class ResearchStatusResponse(BaseModel):

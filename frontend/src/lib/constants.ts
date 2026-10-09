@@ -12,6 +12,8 @@ export const PHASE_LABELS: Record<ResearchPhase, string> = {
   critiquing: "验证与审核",
   awaiting_human_input: "等待确认",
   writing: "生成报告",
+  completed: "已完成",
+  error: "出现问题",
 };
 
 export const PHASE_COLORS: Record<ResearchPhase, string> = {
@@ -20,6 +22,8 @@ export const PHASE_COLORS: Record<ResearchPhase, string> = {
   critiquing: "phase-critiquing",
   awaiting_human_input: "phase-critiquing",
   writing: "phase-writing",
+  completed: "phase-writing",
+  error: "phase-critiquing",
 };
 
 export const PHASE_BG_COLORS: Record<ResearchPhase, string> = {
@@ -28,4 +32,6 @@ export const PHASE_BG_COLORS: Record<ResearchPhase, string> = {
   critiquing: "bg-phase-critiquing",
   awaiting_human_input: "bg-phase-critiquing",
   writing: "bg-phase-writing",
+  completed: "bg-phase-writing",
+  error: "bg-phase-critiquing",
 };

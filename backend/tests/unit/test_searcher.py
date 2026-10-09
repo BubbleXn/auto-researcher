@@ -200,6 +200,9 @@ async def test_searcher_stores_results_in_vectorstore() -> None:
 
     await searcher(state)
 
+    # Allow the background vector-store indexing task to run.
+    await asyncio.sleep(0)
+
     assert len(vs.added) == 1
     assert len(vs.added[0]["documents"]) == 2  # 2 tasks, 1 result each
 

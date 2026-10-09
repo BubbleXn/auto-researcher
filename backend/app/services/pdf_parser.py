@@ -19,7 +19,9 @@ class PDFParser:
 
     def __init__(self, chunk_size: int = 1000, chunk_overlap: int = 200):
         self._chunk_size = chunk_size
-        self._chunk_overlap = chunk_overlap
+        # Guard against misconfiguration: overlap >= size would rewind the
+        # cursor and loop forever in _split_into_chunks.
+        self._chunk_overlap = min(chunk_overlap, chunk_size - 1)
 
     def parse(self, pdf_bytes: bytes, filename: str) -> list[TextChunk]:
         doc = pymupdf.open(stream=pdf_bytes, filetype="pdf")

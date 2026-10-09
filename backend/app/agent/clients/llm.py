@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 from collections.abc import AsyncIterator
 from typing import Any
 
@@ -72,6 +73,25 @@ class OpenAILLMClient:
             if delta and delta.content:
                 yield delta.content
 
+    @staticmethod
+    def _parse_json_object(text: str) -> dict[str, Any]:
+        """Parse a JSON object, tolerating markdown fences or stray prose
+        around the payload (models sometimes ignore response_format)."""
+        cleaned = text.strip()
+        if cleaned.startswith("```"):
+            cleaned = re.sub(r"^```[a-zA-Z]*\s*", "", cleaned)
+            cleaned = re.sub(r"\s*```$", "", cleaned)
+        try:
+            parsed = json.loads(cleaned)
+        except json.JSONDecodeError:
+            start, end = cleaned.find("{"), cleaned.rfind("}")
+            if start == -1 or end <= start:
+                raise
+            parsed = json.loads(cleaned[start : end + 1])
+        if not isinstance(parsed, dict):
+            raise ValueError("LLM returned JSON that is not an object")
+        return parsed
+
     async def generate_structured(
         self,
         messages: list[dict[str, str]],
@@ -84,4 +104,4 @@ class OpenAILLMClient:
             temperature=temperature,
             response_format={"type": "json_object"},
         )
-        return json.loads(response_text)
+        return self._parse_json_object(response_text)

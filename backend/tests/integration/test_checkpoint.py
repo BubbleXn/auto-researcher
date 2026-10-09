@@ -78,6 +78,7 @@ def cleanup():
         "reconnect-missing",
         "reconnect-resume",
         "reconnect-completed",
+        "error-no-done",
     ]:
         transient_store.unregister(rid)
         _active_research.pop(rid, None)
@@ -313,3 +314,56 @@ async def test_reconnection_completed_session_sends_resume_state_and_cleans_up(c
     assert not any("event: done" in e for e in events)
     assert research_id not in _active_research
     assert research_id not in _compiled_graphs
+
+
+@pytest.mark.asyncio
+async def test_error_phase_does_not_emit_done(checkpointer) -> None:
+    """A research that ends via MAX_RETRIES_EXCEEDED must deliver the error
+    event and terminate WITHOUT a done event, so the frontend never
+    mistakes a failed run for a successful completion."""
+    saver = checkpointer
+    research_id = "error-no-done"
+
+    class _AlwaysRetryLLM:
+        async def generate(self, messages, *, temperature=0.7, max_tokens=4096, response_format=None):
+            return json.dumps(self._pick(messages))
+
+        async def generate_stream(self, messages, *, temperature=0.7, max_tokens=4096):
+            yield "# Report"
+
+        async def generate_structured(self, messages, *, schema, temperature=0.0):
+            return self._pick(messages)
+
+        def _pick(self, messages):
+            system = messages[0].get("content", "") if messages else ""
+            if "planning" in system.lower() or "decompose" in system.lower():
+                return {
+                    "outline": ["Section A"],
+                    "sub_tasks": [{"id": "t1", "query": "topic A"}],
+                }
+            return {
+                "has_conflicts": True,
+                "conflicts": [],
+                "missing_aspects": ["x"],
+                "confidence_score": 0.1,
+                "recommendation": "retry_search",
+            }
+
+    semaphore = asyncio.Semaphore(3)
+    events: list[str] = []
+    async for sse_str in _run_research_stream(
+        research_id=research_id,
+        query="error phase test",
+        llm=_AlwaysRetryLLM(),
+        search=_MockSearch(),
+        vectorstore=_MockVS(),
+        semaphore=semaphore,
+        checkpointer=saver,
+    ):
+        events.append(sse_str)
+
+    assert any("MAX_RETRIES_EXCEEDED" in e for e in events)
+    assert not any("event: done" in e for e in events)
+    assert research_id not in _active_research
+    assert research_id not in _compiled_graphs
+    assert transient_store.get_event_queue(research_id) is None

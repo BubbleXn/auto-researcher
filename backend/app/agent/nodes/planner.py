@@ -63,15 +63,28 @@ class PlannerNode:
         )
 
         sub_tasks: list[SubTask] = []
-        for task_data in result.get("sub_tasks", []):
+        raw_tasks = result.get("sub_tasks", [])
+        if not isinstance(raw_tasks, list):
+            raw_tasks = []
+        for i, task_data in enumerate(raw_tasks):
+            # LLM output is untrusted: skip malformed entries instead of
+            # raising KeyError mid-graph.
+            if not isinstance(task_data, dict):
+                continue
+            query = str(task_data.get("query") or "").strip()
+            if not query:
+                continue
             sub_tasks.append(
                 SubTask(
-                    id=task_data["id"],
-                    query=task_data["query"],
+                    id=str(task_data.get("id") or f"task_{i + 1}"),
+                    query=query,
                     status="pending",
                     result=None,
                 )
             )
+
+        if not sub_tasks:
+            raise ValueError("Planner produced no usable sub-tasks")
 
         sse_events.append(
             SSEEvent.create(

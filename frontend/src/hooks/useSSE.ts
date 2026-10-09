@@ -15,6 +15,10 @@ interface UseSSEOptions {
 
 export function useSSE(url: string, { onEvent, onStatusChange, researchId }: UseSSEOptions) {
   const abortRef = useRef<AbortController | null>(null);
+  const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const connectInternalRef = useRef<
+    ((body: Record<string, unknown>, isReconnect: boolean) => Promise<void>) | null
+  >(null);
   const lastEventIdRef = useRef<string | null>(null);
   const researchIdRef = useRef<string | null>(null);
   const retryCountRef = useRef(0);
@@ -26,20 +30,39 @@ export function useSSE(url: string, { onEvent, onStatusChange, researchId }: Use
 
   const connectInternal = useCallback(
     async (body: Record<string, unknown>, isReconnect: boolean) => {
+      if (reconnectTimerRef.current !== null) {
+        clearTimeout(reconnectTimerRef.current);
+        reconnectTimerRef.current = null;
+      }
       abortRef.current?.abort();
       const controller = new AbortController();
       abortRef.current = controller;
 
-      onStatusChange(isReconnect ? "connecting" : "connecting");
+      onStatusChange("connecting");
 
       const canResume = isReconnect && lastEventIdRef.current && researchIdRef.current;
       const requestBody = canResume
         ? {
             ...body,
             research_id: researchIdRef.current,
-            resume_from_event_id: lastEventIdRef.current,
+            resume_from_event_id: Number(lastEventIdRef.current),
           }
         : body;
+
+      const scheduleRetry = () => {
+        if (retryCountRef.current < MAX_RETRIES && lastBodyRef.current) {
+          retryCountRef.current++;
+          const delay = BASE_DELAY_MS * Math.pow(2, retryCountRef.current - 1);
+          reconnectTimerRef.current = setTimeout(() => {
+            reconnectTimerRef.current = null;
+            if (lastBodyRef.current) {
+              void connectInternalRef.current?.(lastBodyRef.current, true);
+            }
+          }, delay);
+        } else {
+          onStatusChange("error");
+        }
+      };
 
       try {
         const res = await fetch(url, {
@@ -50,7 +73,12 @@ export function useSSE(url: string, { onEvent, onStatusChange, researchId }: Use
         });
 
         if (!res.ok || !res.body) {
-          onStatusChange("error");
+          // Retry transient server failures; client errors (4xx) are fatal.
+          if (res.status >= 500 || res.status === 429) {
+            scheduleRetry();
+          } else {
+            onStatusChange("error");
+          }
           return;
         }
 
@@ -97,25 +125,24 @@ export function useSSE(url: string, { onEvent, onStatusChange, researchId }: Use
           onStatusChange("disconnected");
           return;
         }
-
-        if (retryCountRef.current < MAX_RETRIES && lastBodyRef.current) {
-          retryCountRef.current++;
-          const delay = BASE_DELAY_MS * Math.pow(2, retryCountRef.current - 1);
-          setTimeout(() => {
-            if (lastBodyRef.current) {
-              connectInternal(lastBodyRef.current, true);
-            }
-          }, delay);
-        } else {
-          onStatusChange("error");
-        }
+        scheduleRetry();
       }
     },
     [url, onEvent, onStatusChange]
   );
 
+  // Keep a ref to the latest connectInternal so scheduled retries can call
+  // it without the callback referencing its own variable before declaration.
+  useEffect(() => {
+    connectInternalRef.current = connectInternal;
+  }, [connectInternal]);
+
   const connect = useCallback(
     async (body: Record<string, unknown>) => {
+      if (reconnectTimerRef.current !== null) {
+        clearTimeout(reconnectTimerRef.current);
+        reconnectTimerRef.current = null;
+      }
       lastBodyRef.current = body;
       lastEventIdRef.current = null;
       retryCountRef.current = 0;
@@ -125,6 +152,10 @@ export function useSSE(url: string, { onEvent, onStatusChange, researchId }: Use
   );
 
   const disconnect = useCallback(() => {
+    if (reconnectTimerRef.current !== null) {
+      clearTimeout(reconnectTimerRef.current);
+      reconnectTimerRef.current = null;
+    }
     abortRef.current?.abort();
     abortRef.current = null;
     lastBodyRef.current = null;
